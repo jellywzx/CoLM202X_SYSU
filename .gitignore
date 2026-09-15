@@ -1,6 +1,7 @@
 
 .DS_Store
 run/log_CaMa.txt
+run/logs/
 *.pyc
 __pycache__
 *.o
@@ -11,3 +12,15 @@ lib
 *.a
 *.x
 *.log
+ppt_tracer/node_modules/
+/ppt_tracer
+docs/superpowers/
+/tests
+/tests
+*.py
+/tests
+/tests
+/run/aas_riverlake
+# Working documents, not model source. Kept narrow on purpose: an
+# outright /docs would also hide review notes that belong in git.
+docs/*.docx

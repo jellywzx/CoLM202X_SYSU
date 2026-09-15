@@ -23,7 +23,7 @@ MODULE MOD_LeafTemperaturePC
 !-----------------------------------------------------------------------
    USE MOD_Precision
    USE MOD_Namelist, only: DEF_USE_CBL_HEIGHT, DEF_USE_PLANTHYDRAULICS, DEF_USE_OZONESTRESS, &
-                           DEF_RSS_SCHEME, DEF_Interception_scheme, DEF_SPLIT_SOILSNOW, &
+                           DEF_RSS_SCHEME, DEF_SPLIT_SOILSNOW, &
                            DEF_VEG_SNOW
    IMPLICIT NONE
    SAVE
@@ -66,7 +66,11 @@ CONTAINS
                hpbl, &
                qintr_rain ,qintr_snow ,t_precip   ,hprl       ,&
                dheatl     ,smp        ,hk         ,hksati     ,&
-               rootflux    )
+               rootflux                                            &
+#ifdef TRACER
+              ,canopy_smelt_mass_p_out, canopy_frzc_mass_p_out, raw_trc_out &
+#endif
+               )
 
 !=======================================================================
 !
@@ -255,6 +259,12 @@ CONTAINS
         tref,          &! 2 m height air temperature (kelvin)
         qref,          &! 2 m height air specific humidity
         rootflux(nl_soil,ps:pe)    ! root water uptake from different layers
+
+#ifdef TRACER
+   real(r8), dimension(ps:pe), intent(out), optional :: canopy_smelt_mass_p_out ! snow->rain mass [mm]
+   real(r8), dimension(ps:pe), intent(out), optional :: canopy_frzc_mass_p_out  ! rain->snow mass [mm]
+   real(r8), intent(out), optional :: raw_trc_out
+#endif
 
    real(r8), dimension(ps:pe), intent(out) :: &
         z0mpc,         &! z0m for individual PFT
@@ -517,6 +527,11 @@ CONTAINS
 !-----------------------------------------------------------------------
 
 ! only process with vegetated patches
+
+#ifdef TRACER
+      IF (present(canopy_smelt_mass_p_out)) canopy_smelt_mass_p_out(:) = 0._r8
+      IF (present(canopy_frzc_mass_p_out))  canopy_frzc_mass_p_out(:)  = 0._r8
+#endif
 
       lsai(:) = lai(:) + sai(:)
       is_vegetated_patch = .false.
@@ -1754,6 +1769,18 @@ ENDIF
 !     END stability iteration
 ! ======================================================================
 
+      ! Canopy-scale conductance in mol m-2 s-1, including the non-PHS path.
+      ! Use the final iteration's leaf-scale resistance and temperature;
+      ! inactive PFTs have no conducting leaf area.
+      gssun = 0._r8
+      gssha = 0._r8
+      DO i = ps, pe
+         IF (fcover(i) > 0._r8 .and. lai(i) > 0.001_r8) THEN
+            gssun(i) = (laisun(i) / rssun(i)) * (tprcor / tlbef(i))
+            gssha(i) = (laisha(i) / rssha(i)) * (tprcor / tlbef(i))
+         ENDIF
+      ENDDO
+
       IF(DEF_USE_OZONESTRESS)THEN
          DO i = ps, pe
             p = pftclass(i)
@@ -1852,8 +1879,6 @@ ENDIF
 !-----------------------------------------------------------------------
 ! Update dew accumulation (kg/m2)
 !-----------------------------------------------------------------------
-            IF (DEF_Interception_scheme .eq. 1) THEN !colm2014
-
                ldew(i) = max(0., ldew(i)-evplwet(i)*deltim)
 
                ! account for vegetation snow and update ldew_rain, ldew_snow, ldew
@@ -1886,72 +1911,6 @@ ENDIF
                   ldew(i) = ldew_rain(i) + ldew_snow(i)
                ENDIF
 
-            ELSEIF (DEF_Interception_scheme .eq. 2) THEN!CLM4.5
-               ldew(i) = max(0., ldew(i)-evplwet(i)*deltim)
-            ELSEIF (DEF_Interception_scheme .eq. 3) THEN !CLM5
-               IF (ldew_rain(i) .gt. evplwet(i)*deltim) THEN
-                  ldew_rain(i) = ldew_rain(i)-evplwet(i)*deltim
-                  ldew_snow(i) = ldew_snow(i)
-                  ldew(i)=ldew_rain(i)+ldew_snow(i)
-               ELSE
-                  ldew_rain(i) = 0.0
-                  ldew_snow(i) = max(0., ldew(i)-evplwet(i)*deltim)
-                  ldew (i)     = ldew_snow(i)
-               ENDIF
-            ELSEIF (DEF_Interception_scheme .eq. 4) THEN !Noah-MP
-               IF (ldew_rain(i) .gt. evplwet(i)*deltim) THEN
-                  ldew_rain(i) = ldew_rain(i)-evplwet(i)*deltim
-                  ldew_snow(i) = ldew_snow(i)
-                  ldew(i)=ldew_rain(i)+ldew_snow(i)
-               ELSE
-                  ldew_rain(i) = 0.0
-                  ldew_snow(i) = max(0., ldew(i)-evplwet(i)*deltim)
-                  ldew (i)     = ldew_snow(i)
-               ENDIF
-            ELSEIF (DEF_Interception_scheme .eq. 5) THEN !MATSIRO
-               IF (ldew_rain(i) .gt. evplwet(i)*deltim) THEN
-                  ldew_rain(i) = ldew_rain(i)-evplwet(i)*deltim
-                  ldew_snow(i) = ldew_snow(i)
-                  ldew(i)=ldew_rain(i)+ldew_snow(i)
-               ELSE
-                  ldew_rain(i) = 0.0
-                  ldew_snow(i) = max(0., ldew(i)-evplwet(i)*deltim)
-                  ldew (i)     = ldew_snow(i)
-               ENDIF
-            ELSEIF (DEF_Interception_scheme .eq. 6) THEN !VIC
-               IF (ldew_rain(i) .gt. evplwet(i)*deltim) THEN
-                  ldew_rain(i) = ldew_rain(i)-evplwet(i)*deltim
-                  ldew_snow(i) = ldew_snow(i)
-                  ldew(i)=ldew_rain(i)+ldew_snow(i)
-               ELSE
-                  ldew_rain(i) = 0.0
-                  ldew_snow(i) = max(0., ldew(i)-evplwet(i)*deltim)
-                  ldew (i)     = ldew_snow(i)
-               ENDIF
-            ELSEIF (DEF_Interception_scheme .eq. 7) THEN !JULES
-               IF (ldew_rain(i) .gt. evplwet(i)*deltim) THEN
-                  ldew_rain(i) = ldew_rain(i)-evplwet(i)*deltim
-                  ldew_snow(i) = ldew_snow(i)
-                  ldew(i)=ldew_rain(i)+ldew_snow(i)
-               ELSE
-                  ldew_rain(i) = 0.0
-                  ldew_snow(i) = max(0., ldew(i)-evplwet(i)*deltim)
-                  ldew (i)     = ldew_snow(i)
-               ENDIF
-            ELSEIF (DEF_Interception_scheme .eq. 8) THEN !CoLM202x
-               IF (ldew_rain(i) .gt. evplwet(i)*deltim) THEN
-                  ldew_rain(i) = ldew_rain(i)-evplwet(i)*deltim
-                  ldew_snow(i) = ldew_snow(i)
-                  ldew(i)=ldew_rain(i)+ldew_snow(i)
-               ELSE
-                  ldew_rain(i) = 0.0
-                  ldew_snow(i) = max(0., ldew(i)-evplwet(i)*deltim)
-                  ldew (i)     = ldew_snow(i)
-               ENDIF
-            ELSE
-               CALL abort
-            ENDIF
-
             IF ( DEF_VEG_SNOW ) THEN
                ! update fwet_snow
                fwet_snow(i) = 0
@@ -1970,6 +1929,9 @@ ENDIF
                   qmelt(i) = min(ldew_snow(i)/deltim,(tl(i)-tfrz)*cpice*ldew_snow(i)/(deltim*hfus))
                   ldew_snow(i) = max(0.,ldew_snow(i) - qmelt(i)*deltim)
                   ldew_rain(i) = max(0.,ldew_rain(i) + qmelt(i)*deltim)
+#ifdef TRACER
+                  IF (present(canopy_smelt_mass_p_out)) canopy_smelt_mass_p_out(i) = qmelt(i)*deltim
+#endif
                   !NOTE: There may be some problem, energy imbalance
                   !      However, detailed treatment could be somewhat trivial
                   tl(i) = fwet_snow(i)*tfrz + (1.-fwet_snow(i))*tl(i) !Niu et al., 2004
@@ -1979,6 +1941,9 @@ ENDIF
                   qfrz(i)  = min(ldew_rain(i)/deltim,(tfrz-tl(i))*cpliq*ldew_rain(i)/(deltim*hfus))
                   ldew_rain(i) = max(0.,ldew_rain(i) - qfrz(i)*deltim)
                   ldew_snow(i) = max(0.,ldew_snow(i) + qfrz(i)*deltim)
+#ifdef TRACER
+                  IF (present(canopy_frzc_mass_p_out)) canopy_frzc_mass_p_out(i) = qfrz(i)*deltim
+#endif
                   !NOTE: There may be some problem, energy imbalance
                   !      However, detailed treatment could be somewhat trivial
                   tl(i) = fwet_snow(i)*tfrz + (1.-fwet_snow(i))*tl(i) !Niu et al., 2004
@@ -2077,6 +2042,9 @@ ENDIF
 
       tref = thm + vonkar/(fh-fht)*dth * (fh2m/vonkar - fh/vonkar)
       qref =  qm + vonkar/(fq-fqt)*dqh * (fq2m/vonkar - fq/vonkar)
+#ifdef TRACER
+      IF (present(raw_trc_out)) raw_trc_out = max(raw, 0._r8)
+#endif
 
    END SUBROUTINE LeafTemperaturePC
 !----------------------------------------------------------------------

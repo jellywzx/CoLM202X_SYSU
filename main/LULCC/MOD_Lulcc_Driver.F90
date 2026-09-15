@@ -87,9 +87,18 @@ MODULE MOD_Lulcc_Driver
    USE MOD_Lulcc_Vars_TimeVariables
    USE MOD_Lulcc_Initialize
    USE MOD_Vars_TimeVariables
+   USE MOD_Vars_TimeInvariants, only: patchclass
+   USE MOD_LandPatch, only: landpatch
    USE MOD_Lulcc_TransferTraceReadin
    USE MOD_Lulcc_MassEnergyConserve
    USE MOD_Namelist
+#ifdef TRACER
+   USE MOD_Tracer_Lifecycle, only: tracer_lifecycle_land_save_lulcc_state, &
+      tracer_lifecycle_land_remap_lulcc_state, tracer_lifecycle_land_reload_lulcc_inputs
+   USE MOD_Tracer_Vars, only: save_land_tracer_lulcc_state, &
+      remap_land_tracer_lulcc_state
+   USE MOD_Tracer_Conservation, only: deallocate_tracer_conservation
+#endif
 
    IMPLICIT NONE
 
@@ -99,6 +108,9 @@ MODULE MOD_Lulcc_Driver
 
    logical, intent(in)    :: greenwich   !true: greenwich time, false: local time
    integer, intent(inout) :: jdate(3)    !year, julian day, seconds of the starting time
+#ifdef TRACER
+   logical :: have_patch_area
+#endif
 !-----------------------------------------------------------------------
 
       ! allocate Lulcc memory
@@ -108,6 +120,10 @@ MODULE MOD_Lulcc_Driver
       ! SAVE variables
       CALL SAVE_LulccTimeInvariants
       CALL SAVE_LulccTimeVariables
+#ifdef TRACER
+      CALL save_land_tracer_lulcc_state ()
+      CALL tracer_lifecycle_land_save_lulcc_state ()
+#endif
 
       ! =============================================================
       ! cold start for Lulcc
@@ -146,6 +162,43 @@ MODULE MOD_Lulcc_Driver
          CALL LulccTransferTraceReadin(jdate(1))
          CALL LulccMassEnergyConserve()
       ENDIF
+
+#ifdef TRACER
+      IF (p_is_worker .and. allocated(patchclass) .and. size(patchclass) > 0 .and. &
+          .not. allocated(patchclass_)) THEN
+         CALL CoLM_stop('TRACER LULCC cannot remap a worker from zero to nonzero patches')
+      ENDIF
+      IF (p_is_worker .and. allocated(patchclass) .and. allocated(patchclass_) .and. &
+          allocated(landpatch%eindex) .and. allocated(landpatch_%eindex)) THEN
+         CALL deallocate_tracer_conservation ()
+         have_patch_area = allocated(landpatch%pctshared) .and. allocated(landpatch_%pctshared)
+         IF (allocated(lccpct_patches)) THEN
+            IF (have_patch_area) THEN
+               CALL remap_land_tracer_lulcc_state (patchclass, landpatch%eindex, &
+                  patchclass_, landpatch_%eindex, lccpct_patches, &
+                  landpatch%pctshared, landpatch_%pctshared)
+               CALL tracer_lifecycle_land_remap_lulcc_state (patchclass, landpatch%eindex, &
+                  patchclass_, landpatch_%eindex, lccpct_patches, &
+                  landpatch%pctshared, landpatch_%pctshared)
+            ELSE
+               CALL remap_land_tracer_lulcc_state (patchclass, landpatch%eindex, &
+                  patchclass_, landpatch_%eindex, lccpct_patches)
+               CALL tracer_lifecycle_land_remap_lulcc_state (patchclass, landpatch%eindex, &
+                  patchclass_, landpatch_%eindex, lccpct_patches)
+            ENDIF
+         ELSE
+            CALL remap_land_tracer_lulcc_state (patchclass, landpatch%eindex, &
+               patchclass_, landpatch_%eindex)
+            CALL tracer_lifecycle_land_remap_lulcc_state (patchclass, landpatch%eindex, &
+               patchclass_, landpatch_%eindex)
+         ENDIF
+      ENDIF
+      ! GIEMS broadcasts and spatial-pH vector I/O use global collectives;
+      ! reload them after the worker-local state remap with every rank present.
+      ! Pass the current LULCC year and landdata root so all spatial inputs are
+      ! rebuilt from the same year-specific patch map.
+      CALL tracer_lifecycle_land_reload_lulcc_inputs (jdate(1), dir_landdata)
+#endif
 
 
       ! deallocate Lulcc memory

@@ -8,6 +8,10 @@ MODULE MOD_Grid_RiverLakeNetwork
 
    USE MOD_Grid
    USE MOD_WorkerPushData
+   USE, INTRINSIC :: ieee_arithmetic, ONLY: ieee_is_finite
+#ifdef USEMPI
+   USE MOD_SPMD_Task, ONLY: MPI_COMM_NULL
+#endif
    IMPLICIT NONE
 
    ! ----- River Lake network -----
@@ -56,7 +60,7 @@ MODULE MOD_Grid_RiverLakeNetwork
    logical :: rivsys_by_multiple_procs
    integer, allocatable :: irivsys (:)
 #ifdef USEMPI
-   integer :: p_comm_rivsys
+   integer :: p_comm_rivsys = MPI_COMM_NULL
 #endif
 
 
@@ -74,6 +78,33 @@ MODULE MOD_Grid_RiverLakeNetwork
 
    real(r8), allocatable :: topo_area      (:)   ! floodplain area [m^2]
    real(r8), allocatable :: topo_fldhgt    (:,:) ! floodplain height profile [m]
+
+   ! ----- Levee parameters (read from file) -----
+   real(r8), allocatable :: levee_frc_data (:)   ! levee unprotected fraction [0-1]
+   real(r8), allocatable :: levee_hgt_data (:)   ! levee crest height above floodplain datum [m]
+
+   ! ----- Bifurcation pathway parameters (read from file) -----
+   integer  :: totalnpthout  = 0         ! total number of pathways globally
+   integer  :: npthout_local = 0         ! number of pathways on this worker
+   integer  :: npthlev_bif   = 0         ! number of vertical layers
+
+   integer,  allocatable :: pth_upst_local  (:)   ! upstream ucat local index
+   integer,  allocatable :: pth_down_local  (:)   ! downstream ucat local index (or -1 if remote)
+   integer,  allocatable :: pth_down_ucid   (:)   ! downstream ucat global ID
+   integer,  allocatable :: pth_global_id   (:)   ! global pathway ID (1..totalnpthout)
+   real(r8), allocatable :: pth_dst         (:)   ! pathway length [m], used for BIF slope (not adaptive-dt CFL)
+   real(r8), allocatable :: pth_elv         (:,:) ! elevation profile (npthlev, npthout_local) [m]
+   real(r8), allocatable :: pth_wth         (:,:) ! width profile (npthlev, npthout_local) [m]
+   real(r8), allocatable :: pth_man         (:)   ! Manning coefficients (npthlev)
+
+   ! Reverse mapping: for each ucat, which global pathway IDs feed into it as downstream
+   integer  :: max_bif_incoming
+   integer,  allocatable :: bif_incoming_pths (:,:) ! (max_bif_incoming, numucat)
+   real(r8), allocatable :: bif_incoming_wts  (:,:) ! weights, all 1.0
+
+   ! Push objects for bifurcation
+   type(worker_pushdata_type) :: push_bif_dn2pth   ! ucat state -> pathway downstream end
+   type(worker_pushdata_type) :: push_bif_influx   ! pathway flux -> downstream ucats
 
    real(r8), allocatable :: bedelv_next    (:)   ! downstream river bed elevation [m]
    real(r8), allocatable :: outletwth      (:)   ! river outlet width [m]
@@ -148,7 +179,7 @@ CONTAINS
    integer  :: iworker, iwrkdsp
    integer  :: iloc, i, j, ithis
    real(r8) :: sumwt
-   logical  :: is_new
+   logical  :: is_new, invalid_rivsys_partition
 
 
 #ifdef USEMPI
@@ -419,6 +450,15 @@ CONTAINS
                mpi_tag_data, p_comm_glb, p_stat, p_err)
          ENDIF
 
+      ENDIF
+
+      ! Non-worker ranks (master, IO) need numucat=0 and zero-length arrays
+      ! so that hist gather calls and build_worker_pushdata receive valid arguments.
+      IF (.not. p_is_worker) THEN
+         numucat = 0
+         IF (.not. allocated(ucat_ucid)) allocate (ucat_ucid (0))
+         IF (.not. allocated(x_ucat   )) allocate (x_ucat    (0))
+         IF (.not. allocated(y_ucat   )) allocate (y_ucat    (0))
       ENDIF
 
       CALL mpi_barrier (p_comm_glb, p_err)
@@ -727,6 +767,13 @@ CONTAINS
       ENDIF
 
       CALL mpi_barrier (p_comm_glb, p_err)
+
+      ! Non-worker ranks need zero-length arrays for build_worker_pushdata
+      IF (.not. p_is_worker) THEN
+         IF (.not. allocated(ucat_next)) allocate (ucat_next (0))
+         IF (.not. allocated(ucat_ups )) allocate (ucat_ups  (upnmax, 0))
+         IF (.not. allocated(wts_ups  )) allocate (wts_ups   (upnmax, 0))
+      ENDIF
 #endif
 
       IF (p_is_worker) THEN
@@ -768,6 +815,7 @@ CONTAINS
          ENDIF
       ENDIF
 
+      rivsys_by_multiple_procs = .false.
       IF (p_is_worker) THEN
          IF (numucat > 0) THEN
             color = maxval(rivermouth)
@@ -776,7 +824,6 @@ CONTAINS
             CALL mpi_comm_split (p_comm_worker, MPI_UNDEFINED, p_iam_worker, p_comm_rivsys, p_err)
          ENDIF
 
-         rivsys_by_multiple_procs = .false.
          IF (p_comm_rivsys /= MPI_COMM_NULL) THEN
             CALL mpi_comm_size (p_comm_rivsys, p_np_rivsys, p_err)
             IF (p_np_rivsys > 1) THEN
@@ -784,13 +831,31 @@ CONTAINS
             ENDIF
          ENDIF
       ENDIF
+
+      ! The scalar p_comm_rivsys reduction below is valid only because the
+      ! partitioner reserves each multi-rank river system an exclusive worker
+      ! range.  Make that implicit invariant executable: a future partitioner
+      ! change must not silently put two river systems on one member of a
+      ! multi-rank communicator and then reduce only one dt value.
+      invalid_rivsys_partition = .false.
+      IF (p_is_worker .and. rivsys_by_multiple_procs .and. numucat > 0) THEN
+         invalid_rivsys_partition = minval(rivermouth) /= maxval(rivermouth)
+      ENDIF
+      CALL mpi_allreduce (MPI_IN_PLACE, invalid_rivsys_partition, 1, MPI_LOGICAL, &
+         MPI_LOR, p_comm_glb, p_err)
+      IF (invalid_rivsys_partition) THEN
+         IF (p_is_master) write(*,'(A)') &
+            'ERROR: a multi-rank river communicator contains more than one river system.'
+         CALL CoLM_stop ('invalid river-system MPI partition')
+      ENDIF
 #else
       rivsys_by_multiple_procs = .false.
 #endif
 
       IF (p_is_worker) THEN
 
-         IF (numucat > 0) allocate (irivsys (numucat))
+         numrivsys = 0
+         allocate (irivsys (numucat))
 
          IF (.not. rivsys_by_multiple_procs) THEN
             IF (numucat > 0) THEN
@@ -831,6 +896,15 @@ CONTAINS
       CALL readin_riverlake_parameter (parafile, 'topo_area',      rdata1d = topo_area     )
       CALL readin_riverlake_parameter (parafile, 'topo_fldhgt',    rdata2d = topo_fldhgt   )
 
+      IF (DEF_USE_LEVEE) THEN
+         CALL readin_riverlake_parameter (parafile, 'levee_frc', rdata1d = levee_frc_data)
+         CALL readin_riverlake_parameter (parafile, 'levee_hgt', rdata1d = levee_hgt_data)
+      ENDIF
+
+      IF (DEF_USE_BIFURCATION) THEN
+         CALL read_and_distribute_bifurcation (parafile)
+      ENDIF
+
       IF (p_is_worker) THEN
          IF (numucat > 0) THEN
 
@@ -868,7 +942,7 @@ CONTAINS
                floodplain_curve(i)%flpstomax(0) = 0.
                DO j = 1, floodplain_curve(i)%nlfp
                   floodplain_curve(i)%flpstomax(j) = floodplain_curve(i)%flpstomax(j-1)        &
-                     + 0.5 * (floodplain_curve(i)%flparea(j) + floodplain_curve(i)%flparea(j-1)) &
+                     + 0.5 * (floodplain_curve(i)%flpaccare(j) + floodplain_curve(i)%flpaccare(j-1)) &
                            * (floodplain_curve(i)%flphgt(j)  - floodplain_curve(i)%flphgt(j-1))
                ENDDO
             ENDDO
@@ -1212,7 +1286,25 @@ CONTAINS
    ! ---------
    SUBROUTINE riverlake_network_final ()
 
+#ifdef USEMPI
+   USE MOD_SPMD_Task, ONLY: p_err
+#endif
    IMPLICIT NONE
+
+      ! Module-scope derived objects are not finalized when this routine
+      ! returns. Release their owned allocatables explicitly so a later
+      ! riverlake_network_init can rebuild them without allocate-on-allocated
+      ! failures. These cleanup routines are local deallocations only.
+      CALL worker_pushdata_free_mem (push_inpm2ucat)
+      CALL worker_pushdata_free_mem (push_ucat2inpm)
+      CALL worker_pushdata_free_mem (push_ucat2grid)
+      CALL worker_pushdata_free_mem (allreduce_inpm)
+      CALL worker_pushdata_free_mem (push_next2ucat)
+      CALL worker_pushdata_free_mem (push_ups2ucat)
+      CALL worker_pushdata_free_mem (push_bif_dn2pth)
+      CALL worker_pushdata_free_mem (push_bif_influx)
+      CALL worker_remapdata_free_mem (remap_patch2inpm)
+      CALL grid_free_mem (griducat)
 
       IF (allocated(x_ucat           )) deallocate(x_ucat           )
       IF (allocated(y_ucat           )) deallocate(y_ucat           )
@@ -1230,7 +1322,9 @@ CONTAINS
       IF (allocated(area_uc2gd       )) deallocate(area_uc2gd       )
       IF (allocated(ucat_next        )) deallocate(ucat_next        )
       IF (allocated(ucat_ups         )) deallocate(ucat_ups         )
+      IF (allocated(wts_ups          )) deallocate(wts_ups          )
       IF (allocated(irivsys          )) deallocate(irivsys          )
+      IF (allocated(lake_type        )) deallocate(lake_type        )
 
       IF (allocated(topo_rivelv      )) deallocate(topo_rivelv      )
       IF (allocated(topo_rivhgt      )) deallocate(topo_rivhgt      )
@@ -1241,6 +1335,8 @@ CONTAINS
       IF (allocated(topo_rivstomax   )) deallocate(topo_rivstomax   )
       IF (allocated(topo_area        )) deallocate(topo_area        )
       IF (allocated(topo_fldhgt      )) deallocate(topo_fldhgt      )
+      IF (allocated(levee_frc_data   )) deallocate(levee_frc_data   )
+      IF (allocated(levee_hgt_data   )) deallocate(levee_hgt_data   )
       IF (allocated(bedelv_next      )) deallocate(bedelv_next      )
       IF (allocated(outletwth        )) deallocate(outletwth        )
 
@@ -1248,7 +1344,602 @@ CONTAINS
 
       IF (allocated(allups_mask_ucat )) deallocate(allups_mask_ucat )
 
+      ! ----- Bifurcation arrays -----
+      IF (allocated(pth_upst_local    )) deallocate(pth_upst_local    )
+      IF (allocated(pth_down_local    )) deallocate(pth_down_local    )
+      IF (allocated(pth_down_ucid     )) deallocate(pth_down_ucid     )
+      IF (allocated(pth_global_id     )) deallocate(pth_global_id     )
+      IF (allocated(pth_dst           )) deallocate(pth_dst           )
+      IF (allocated(pth_elv           )) deallocate(pth_elv           )
+      IF (allocated(pth_wth           )) deallocate(pth_wth           )
+      IF (allocated(pth_man           )) deallocate(pth_man           )
+      IF (allocated(bif_incoming_pths )) deallocate(bif_incoming_pths )
+      IF (allocated(bif_incoming_wts  )) deallocate(bif_incoming_wts  )
+
+#ifdef USEMPI
+      IF (p_comm_rivsys /= MPI_COMM_NULL) THEN
+         CALL mpi_comm_free (p_comm_rivsys, p_err)
+         p_comm_rivsys = MPI_COMM_NULL
+      ENDIF
+#endif
+
    END SUBROUTINE riverlake_network_final
+
+   ! ---------
+   SUBROUTINE read_and_distribute_bifurcation (parafile)
+
+   USE MOD_SPMD_Task
+   USE MOD_NetCDFSerial
+   USE MOD_Utils
+   IMPLICIT NONE
+
+   character(len=*), intent(in) :: parafile
+
+   ! Local Variables
+   integer,  allocatable :: bif_upst_all  (:)   ! upstream seq index (global)
+   integer,  allocatable :: bif_down_all  (:)   ! downstream seq index (global)
+   real(r8), allocatable :: bif_dist_all  (:)   ! channel distance
+   real(r8), allocatable :: bif_elev_all  (:,:) ! elevation profile (npthlev, npthout)
+   real(r8), allocatable :: bif_wdth_all  (:,:) ! width profile (npthlev, npthout)
+   real(r8), allocatable :: bif_mann_all  (:)   ! Manning coefficients (npthlev)
+
+   integer,  allocatable :: iworker_of_ucat (:) ! which worker owns each global ucat
+   integer,  allocatable :: pth_owner       (:) ! which worker owns each pathway
+   integer,  allocatable :: npth_wrk        (:) ! number of pathways per worker
+
+   ! Per-worker send buffers
+   integer,  allocatable :: pth_upst_send (:)
+   integer,  allocatable :: pth_down_send (:)
+   integer,  allocatable :: pth_glid_send (:)
+   real(r8), allocatable :: pth_dist_send (:)
+   real(r8), allocatable :: pth_elev_send (:,:)
+   real(r8), allocatable :: pth_wdth_send (:,:)
+
+   ! Reverse mapping temporaries
+   integer,  allocatable :: bif_inc_cnt   (:)   ! count of incoming pathways per ucat (global)
+   integer,  allocatable :: bif_inc_all   (:,:) ! global pathway IDs incoming to each ucat
+   integer,  allocatable :: bif_inc_send  (:,:)
+   real(r8), allocatable :: bif_wt_send   (:,:)
+
+   integer :: iworker, nucat, npth, ip, i, j, iloc
+   integer :: max_bif_inc_global
+#ifdef CoLMDEBUG
+   ! Debug-only bifurcation-connected-component diagnostic.
+   integer,  allocatable :: uf_parent (:)   ! union-find over global ucats 1..totalnumucat
+   integer,  allocatable :: sys_root  (:)   ! main-channel (river-system) root per ucat
+   integer,  allocatable :: comp_nsys (:)   ! river systems per bif-connected component
+   integer :: ib, ra, rb, k, nsys, ncomp_bif, max_sys_in_comp
+#endif
+
+#ifdef USEMPI
+
+      ! ================================================================
+      ! Master: read NetCDF data and prepare for distribution
+      ! ================================================================
+      IF (p_is_master) THEN
+
+         CALL read_bifurcation_global_arrays (parafile, bif_upst_all, bif_down_all, &
+            bif_dist_all, bif_elev_all, bif_wdth_all, bif_mann_all)
+
+#ifdef CoLMDEBUG
+         ! Debug-only connectivity summary; do not print or allocate in production.
+         IF (totalnumucat > 0) THEN
+            allocate (uf_parent (totalnumucat))
+            allocate (sys_root  (totalnumucat))
+            allocate (comp_nsys (totalnumucat))
+            DO k = 1, totalnumucat
+               uf_parent(k) = k
+            ENDDO
+            ! Phase 1: main-channel edges (each drainage tree = one river system)
+            DO k = 1, totalnumucat
+               ib = ucat_next(k)
+               IF (ib < 1 .or. ib > totalnumucat) CYCLE
+               ra = k
+               DO WHILE (uf_parent(ra) /= ra)
+                  uf_parent(ra) = uf_parent(uf_parent(ra));  ra = uf_parent(ra)
+               ENDDO
+               rb = ib
+               DO WHILE (uf_parent(rb) /= rb)
+                  uf_parent(rb) = uf_parent(uf_parent(rb));  rb = uf_parent(rb)
+               ENDDO
+               IF (ra /= rb) uf_parent(max(ra,rb)) = min(ra,rb)
+            ENDDO
+            ! Snapshot river-system roots before adding bifurcation edges
+            DO k = 1, totalnumucat
+               ra = k
+               DO WHILE (uf_parent(ra) /= ra)
+                  ra = uf_parent(ra)
+               ENDDO
+               sys_root(k) = ra
+            ENDDO
+            ! Phase 2: bifurcation edges (merge bif-linked systems)
+            DO ip = 1, totalnpthout
+               IF (bif_down_all(ip) < 1 .or. bif_down_all(ip) > totalnumucat) CYCLE
+               ra = bif_upst_all(ip)
+               DO WHILE (uf_parent(ra) /= ra)
+                  uf_parent(ra) = uf_parent(uf_parent(ra));  ra = uf_parent(ra)
+               ENDDO
+               rb = bif_down_all(ip)
+               DO WHILE (uf_parent(rb) /= rb)
+                  uf_parent(rb) = uf_parent(uf_parent(rb));  rb = uf_parent(rb)
+               ENDDO
+               IF (ra /= rb) uf_parent(max(ra,rb)) = min(ra,rb)
+            ENDDO
+            ! Count river systems per final component (system reps: sys_root(k)==k)
+            comp_nsys(:) = 0
+            nsys = 0
+            DO k = 1, totalnumucat
+               IF (sys_root(k) /= k) CYCLE
+               nsys = nsys + 1
+               ra = k
+               DO WHILE (uf_parent(ra) /= ra)
+                  ra = uf_parent(ra)
+               ENDDO
+               comp_nsys(ra) = comp_nsys(ra) + 1
+            ENDDO
+            ncomp_bif       = count(comp_nsys > 0)
+            max_sys_in_comp = maxval(comp_nsys)
+            write(*,'(A)')    '===== Bifurcation connectivity diagnostic (STEP-0 go/no-go) ====='
+            write(*,'(A,I0)') '  river systems                    : ', nsys
+            write(*,'(A,I0)') '  bifurcation paths (totalnpthout) : ', totalnpthout
+            write(*,'(A,I0)') '  bif-connected components         : ', ncomp_bif
+            write(*,'(A,I0,A,F6.2,A)') '  largest component (systems)      : ', max_sys_in_comp, &
+               ' (', 100._r8*real(max_sys_in_comp,r8)/real(max(nsys,1),r8), '% of systems)'
+            write(*,'(A)')    '  GUIDE: largest >~50% of systems => per-component dt gives ~no'
+            write(*,'(A)')    '         speedup (one giant component); small/many => worth it.'
+            write(*,'(A)')    '================================================================'
+            deallocate (uf_parent, sys_root, comp_nsys)
+         ENDIF
+#endif
+
+         ! Build iworker_of_ucat: maps global seq index -> worker index
+         allocate (iworker_of_ucat (totalnumucat))
+         iworker_of_ucat(:) = -1
+         DO iworker = 0, p_np_worker-1
+            DO i = 1, numucat_wrk(iworker)
+               iworker_of_ucat(ucat_data_address(iworker)%val(i)) = iworker
+            ENDDO
+         ENDDO
+
+         ! Assign each pathway to the worker that owns its upstream cell
+         allocate (pth_owner (totalnpthout))
+         allocate (npth_wrk  (0:p_np_worker-1))
+         npth_wrk(:) = 0
+         DO ip = 1, totalnpthout
+            pth_owner(ip) = iworker_of_ucat(bif_upst_all(ip))
+            IF (pth_owner(ip) < 0) CALL CoLM_stop ('bifurcation upstream owner not found')
+            npth_wrk(pth_owner(ip)) = npth_wrk(pth_owner(ip)) + 1
+         ENDDO
+
+         ! Build reverse mapping: for each ucat, which pathways have it as downstream
+         allocate (bif_inc_cnt (totalnumucat))
+         bif_inc_cnt(:) = 0
+         DO ip = 1, totalnpthout
+            j = bif_down_all(ip)
+            IF (j > 0 .and. j <= totalnumucat) THEN
+               bif_inc_cnt(j) = bif_inc_cnt(j) + 1
+            ENDIF
+         ENDDO
+         max_bif_inc_global = maxval(bif_inc_cnt)
+         IF (max_bif_inc_global < 1) max_bif_inc_global = 1
+
+         allocate (bif_inc_all (max_bif_inc_global, totalnumucat))
+         bif_inc_all(:,:) = 0
+         bif_inc_cnt(:) = 0
+         DO ip = 1, totalnpthout
+            j = bif_down_all(ip)
+            IF (j > 0 .and. j <= totalnumucat) THEN
+               bif_inc_cnt(j) = bif_inc_cnt(j) + 1
+               bif_inc_all(bif_inc_cnt(j), j) = ip
+            ENDIF
+         ENDDO
+
+      ENDIF
+
+      ! Broadcast scalar dimensions
+      CALL mpi_bcast (totalnpthout, 1, MPI_INTEGER, p_address_master, p_comm_glb, p_err)
+      CALL mpi_bcast (npthlev_bif,  1, MPI_INTEGER, p_address_master, p_comm_glb, p_err)
+
+      ! Broadcast Manning coefficients (shared by all ranks participating in p_comm_glb).
+      ! IO ranks also enter this broadcast, so they need a valid receive buffer.
+      IF (.not. p_is_master) allocate (pth_man (npthlev_bif))
+      IF (p_is_master) THEN
+         ! Copy from bif_mann_all before broadcast
+         IF (.not. allocated(pth_man)) allocate (pth_man (npthlev_bif))
+         pth_man(:) = bif_mann_all(:)
+         deallocate (bif_mann_all)
+      ENDIF
+      CALL mpi_bcast (pth_man, npthlev_bif, MPI_REAL8, p_address_master, p_comm_glb, p_err)
+
+      ! Broadcast max_bif_incoming
+      IF (p_is_master) max_bif_incoming = max_bif_inc_global
+      CALL mpi_bcast (max_bif_incoming, 1, MPI_INTEGER, p_address_master, p_comm_glb, p_err)
+
+      ! ================================================================
+      ! Distribute pathway data and reverse mapping to workers
+      ! ================================================================
+      IF (p_is_master) THEN
+
+         DO iworker = 0, p_np_worker-1
+
+            npth  = npth_wrk(iworker)
+            nucat = numucat_wrk(iworker)
+
+            ! Send pathway count
+            CALL mpi_send (npth, 1, MPI_INTEGER, p_address_worker(iworker), &
+               mpi_tag_mesg, p_comm_glb, p_err)
+
+            IF (npth > 0) THEN
+               ! Pack pathway data for this worker
+               allocate (pth_upst_send (npth))
+               allocate (pth_down_send (npth))
+               allocate (pth_glid_send (npth))
+               allocate (pth_dist_send (npth))
+               allocate (pth_elev_send (npthlev_bif, npth))
+               allocate (pth_wdth_send (npthlev_bif, npth))
+
+               j = 0
+               DO ip = 1, totalnpthout
+                  IF (pth_owner(ip) == iworker) THEN
+                     j = j + 1
+                     pth_upst_send(j) = bif_upst_all(ip)
+                     pth_down_send(j) = bif_down_all(ip)
+                     pth_glid_send(j) = ip
+                     pth_dist_send(j) = bif_dist_all(ip)
+                     pth_elev_send(:,j) = bif_elev_all(:,ip)
+                     pth_wdth_send(:,j) = bif_wdth_all(:,ip)
+                  ENDIF
+               ENDDO
+
+               CALL mpi_send (pth_upst_send, npth, MPI_INTEGER, &
+                  p_address_worker(iworker), mpi_tag_data, p_comm_glb, p_err)
+               CALL mpi_send (pth_down_send, npth, MPI_INTEGER, &
+                  p_address_worker(iworker), mpi_tag_data, p_comm_glb, p_err)
+               CALL mpi_send (pth_glid_send, npth, MPI_INTEGER, &
+                  p_address_worker(iworker), mpi_tag_data, p_comm_glb, p_err)
+               CALL mpi_send (pth_dist_send, npth, MPI_REAL8, &
+                  p_address_worker(iworker), mpi_tag_data, p_comm_glb, p_err)
+               CALL mpi_send (pth_elev_send, npthlev_bif*npth, MPI_REAL8, &
+                  p_address_worker(iworker), mpi_tag_data, p_comm_glb, p_err)
+               CALL mpi_send (pth_wdth_send, npthlev_bif*npth, MPI_REAL8, &
+                  p_address_worker(iworker), mpi_tag_data, p_comm_glb, p_err)
+
+               deallocate (pth_upst_send)
+               deallocate (pth_down_send)
+               deallocate (pth_glid_send)
+               deallocate (pth_dist_send)
+               deallocate (pth_elev_send)
+               deallocate (pth_wdth_send)
+            ENDIF
+
+            ! Send reverse mapping for this worker's ucats
+            IF (nucat > 0) THEN
+               allocate (bif_inc_send (max_bif_inc_global, nucat))
+               allocate (bif_wt_send  (max_bif_inc_global, nucat))
+               DO i = 1, nucat
+                  bif_inc_send(:,i) = bif_inc_all(:,ucat_data_address(iworker)%val(i))
+               ENDDO
+               bif_wt_send(:,:) = 0.
+               WHERE (bif_inc_send > 0) bif_wt_send = 1.
+
+               CALL mpi_send (bif_inc_send, max_bif_inc_global*nucat, MPI_INTEGER, &
+                  p_address_worker(iworker), mpi_tag_data, p_comm_glb, p_err)
+               CALL mpi_send (bif_wt_send,  max_bif_inc_global*nucat, MPI_REAL8, &
+                  p_address_worker(iworker), mpi_tag_data, p_comm_glb, p_err)
+
+               deallocate (bif_inc_send)
+               deallocate (bif_wt_send)
+            ENDIF
+
+         ENDDO
+
+         ! Clean up master arrays
+         deallocate (bif_upst_all)
+         deallocate (bif_down_all)
+         deallocate (bif_dist_all)
+         deallocate (bif_elev_all)
+         deallocate (bif_wdth_all)
+         deallocate (iworker_of_ucat)
+         deallocate (pth_owner)
+         deallocate (npth_wrk)
+         deallocate (bif_inc_cnt)
+         deallocate (bif_inc_all)
+
+      ELSEIF (p_is_worker) THEN
+
+         ! Receive pathway count
+         CALL mpi_recv (npthout_local, 1, MPI_INTEGER, p_address_master, &
+            mpi_tag_mesg, p_comm_glb, p_stat, p_err)
+
+         IF (npthout_local > 0) THEN
+            allocate (pth_upst_local (npthout_local))
+            allocate (pth_down_ucid  (npthout_local))
+            allocate (pth_global_id  (npthout_local))
+            allocate (pth_dst        (npthout_local))
+            allocate (pth_elv        (npthlev_bif, npthout_local))
+            allocate (pth_wth        (npthlev_bif, npthout_local))
+
+            ! Receive raw global indices first
+            CALL mpi_recv (pth_upst_local, npthout_local, MPI_INTEGER, p_address_master, &
+               mpi_tag_data, p_comm_glb, p_stat, p_err)
+            CALL mpi_recv (pth_down_ucid,  npthout_local, MPI_INTEGER, p_address_master, &
+               mpi_tag_data, p_comm_glb, p_stat, p_err)
+            CALL mpi_recv (pth_global_id,  npthout_local, MPI_INTEGER, p_address_master, &
+               mpi_tag_data, p_comm_glb, p_stat, p_err)
+            CALL mpi_recv (pth_dst,        npthout_local, MPI_REAL8,   p_address_master, &
+               mpi_tag_data, p_comm_glb, p_stat, p_err)
+            CALL mpi_recv (pth_elv,        npthlev_bif*npthout_local, MPI_REAL8, p_address_master, &
+               mpi_tag_data, p_comm_glb, p_stat, p_err)
+            CALL mpi_recv (pth_wth,        npthlev_bif*npthout_local, MPI_REAL8, p_address_master, &
+               mpi_tag_data, p_comm_glb, p_stat, p_err)
+
+            allocate (pth_down_local (npthout_local))
+            CALL localize_bifurcation_path_indices (pth_upst_local, pth_down_ucid, pth_down_local)
+         ELSE
+            npthout_local = 0
+            ! Allocate zero-size arrays so they are safely passable to
+            ! assumed-shape dummy arguments (e.g. build_worker_pushdata).
+            allocate (pth_upst_local (0))
+            allocate (pth_down_ucid  (0))
+            allocate (pth_down_local (0))
+            allocate (pth_global_id  (0))
+            allocate (pth_dst        (0))
+            allocate (pth_elv        (npthlev_bif, 0))
+            allocate (pth_wth        (npthlev_bif, 0))
+         ENDIF
+
+         ! Receive reverse mapping
+         IF (numucat > 0) THEN
+            allocate (bif_incoming_pths (max_bif_incoming, numucat))
+            allocate (bif_incoming_wts  (max_bif_incoming, numucat))
+            CALL mpi_recv (bif_incoming_pths, max_bif_incoming*numucat, MPI_INTEGER, &
+               p_address_master, mpi_tag_data, p_comm_glb, p_stat, p_err)
+            CALL mpi_recv (bif_incoming_wts,  max_bif_incoming*numucat, MPI_REAL8, &
+               p_address_master, mpi_tag_data, p_comm_glb, p_stat, p_err)
+         ELSE
+            allocate (bif_incoming_pths (max_bif_incoming, 0))
+            allocate (bif_incoming_wts  (max_bif_incoming, 0))
+         ENDIF
+
+      ENDIF
+
+      CALL mpi_barrier (p_comm_glb, p_err)
+
+      ! IO processes did not enter master or worker branches above.
+      ! Allocate zero-length arrays so build_worker_pushdata (MPI collective) is safe.
+      IF (p_is_io) THEN
+         npthout_local = 0
+         allocate (pth_upst_local (0))
+         allocate (pth_down_ucid  (0))
+         allocate (pth_down_local (0))
+         allocate (pth_global_id  (0))
+         allocate (pth_dst        (0))
+         allocate (pth_elv        (npthlev_bif, 0))
+         allocate (pth_wth        (npthlev_bif, 0))
+         allocate (bif_incoming_pths (max_bif_incoming, 0))
+         allocate (bif_incoming_wts  (max_bif_incoming, 0))
+      ENDIF
+
+#else
+      ! ================================================================
+      ! Serial (non-MPI) path
+      ! ================================================================
+
+      CALL read_bifurcation_global_arrays (parafile, bif_upst_all, bif_down_all, &
+         bif_dist_all, bif_elev_all, bif_wdth_all, bif_mann_all)
+
+      npthout_local = totalnpthout
+
+      allocate (pth_man (npthlev_bif))
+      pth_man(:) = bif_mann_all(:)
+      deallocate (bif_mann_all)
+
+      IF (npthout_local > 0) THEN
+         allocate (pth_upst_local (npthout_local))
+         allocate (pth_down_ucid  (npthout_local))
+         allocate (pth_down_local (npthout_local))
+         allocate (pth_global_id  (npthout_local))
+         allocate (pth_dst        (npthout_local))
+         allocate (pth_elv        (npthlev_bif, npthout_local))
+         allocate (pth_wth        (npthlev_bif, npthout_local))
+
+         pth_down_ucid(:) = bif_down_all(:)
+         pth_dst(:)       = bif_dist_all(:)
+         pth_elv(:,:)     = bif_elev_all(:,:)
+         pth_wth(:,:)     = bif_wdth_all(:,:)
+
+         DO ip = 1, npthout_local
+            pth_global_id(ip) = ip
+         ENDDO
+
+         pth_upst_local(:) = bif_upst_all(:)
+         CALL localize_bifurcation_path_indices (pth_upst_local, pth_down_ucid, pth_down_local)
+      ELSE
+         npthout_local = 0
+         allocate (pth_upst_local (0))
+         allocate (pth_down_ucid  (0))
+         allocate (pth_down_local (0))
+         allocate (pth_global_id  (0))
+         allocate (pth_dst        (0))
+         allocate (pth_elv        (npthlev_bif, 0))
+         allocate (pth_wth        (npthlev_bif, 0))
+      ENDIF
+
+      deallocate (bif_upst_all)
+      deallocate (bif_down_all)
+      deallocate (bif_dist_all)
+      deallocate (bif_elev_all)
+      deallocate (bif_wdth_all)
+
+      ! Build reverse mapping
+      allocate (bif_inc_cnt (totalnumucat))
+      bif_inc_cnt(:) = 0
+      DO ip = 1, totalnpthout
+         j = pth_down_ucid(ip)
+         IF (j > 0 .and. j <= totalnumucat) THEN
+            bif_inc_cnt(j) = bif_inc_cnt(j) + 1
+         ENDIF
+      ENDDO
+      max_bif_incoming = maxval(bif_inc_cnt)
+      IF (max_bif_incoming < 1) max_bif_incoming = 1
+
+      allocate (bif_incoming_pths (max_bif_incoming, numucat))
+      allocate (bif_incoming_wts  (max_bif_incoming, numucat))
+      bif_incoming_pths(:,:) = 0
+      bif_incoming_wts(:,:)  = 0.
+
+      bif_inc_cnt(:) = 0
+      DO ip = 1, totalnpthout
+         j = pth_down_ucid(ip)
+         IF (j > 0 .and. j <= totalnumucat) THEN
+            bif_inc_cnt(j) = bif_inc_cnt(j) + 1
+            ! Find local index of ucat j
+            DO i = 1, numucat
+               IF (ucat_ucid(i) == j) THEN
+                  bif_incoming_pths(bif_inc_cnt(j), i) = ip
+                  bif_incoming_wts (bif_inc_cnt(j), i) = 1.
+                  EXIT
+               ENDIF
+            ENDDO
+         ENDIF
+      ENDDO
+
+      deallocate (bif_inc_cnt)
+
+#endif
+
+      ! ================================================================
+      ! Build push objects for bifurcation (both MPI and serial)
+      ! ================================================================
+
+      ! push_bif_dn2pth: single-source push from ucats to pathways
+      !   Each pathway needs the state of its downstream ucat
+      CALL build_worker_pushdata (numucat, ucat_ucid, npthout_local, pth_down_ucid, push_bif_dn2pth)
+
+      ! push_bif_influx: multi-source push from pathways to ucats
+      !   Each ucat may receive flux from multiple pathways
+      !   Uses global pathway IDs as source IDs
+      CALL build_worker_pushdata (npthout_local, pth_global_id, numucat, &
+         bif_incoming_pths, bif_incoming_wts, push_bif_influx)
+
+   END SUBROUTINE read_and_distribute_bifurcation
+
+   ! ---------
+   SUBROUTINE read_bifurcation_global_arrays (parafile, bif_upst_all, bif_down_all, &
+      bif_dist_all, bif_elev_all, bif_wdth_all, bif_mann_all)
+
+   USE MOD_NetCDFSerial
+   USE MOD_Utils
+   IMPLICIT NONE
+
+   character(len=*), intent(in) :: parafile
+   integer,  allocatable, intent(out) :: bif_upst_all  (:)
+   integer,  allocatable, intent(out) :: bif_down_all  (:)
+   real(r8), allocatable, intent(out) :: bif_dist_all  (:)
+   real(r8), allocatable, intent(out) :: bif_elev_all  (:,:)
+   real(r8), allocatable, intent(out) :: bif_wdth_all  (:,:)
+   real(r8), allocatable, intent(out) :: bif_mann_all  (:)
+   integer :: ip, ilev, prev_active_lev
+
+      CALL ncio_inquire_length (parafile, 'bifurcation_upst',    totalnpthout)
+      CALL ncio_inquire_length (parafile, 'bifurcation_manning', npthlev_bif)
+
+      CALL ncio_read_serial (parafile, 'bifurcation_upst',      bif_upst_all)
+      CALL ncio_read_serial (parafile, 'bifurcation_down',      bif_down_all)
+      CALL ncio_read_serial (parafile, 'bifurcation_distance',  bif_dist_all)
+      CALL ncio_read_serial (parafile, 'bifurcation_elevation', bif_elev_all)
+      CALL ncio_read_serial (parafile, 'bifurcation_width',     bif_wdth_all)
+      CALL ncio_read_serial (parafile, 'bifurcation_manning',   bif_mann_all)
+
+      IF (size(bif_down_all) /= totalnpthout .or. &
+          size(bif_dist_all) /= totalnpthout .or. &
+          size(bif_elev_all, 1) /= npthlev_bif .or. &
+          size(bif_elev_all, 2) /= totalnpthout .or. &
+          size(bif_wdth_all, 1) /= npthlev_bif .or. &
+          size(bif_wdth_all, 2) /= totalnpthout .or. &
+          size(bif_mann_all) /= npthlev_bif) THEN
+         CALL CoLM_stop ('bifurcation parameter dimensions are inconsistent')
+      ENDIF
+
+      IF (any(.not. ieee_is_finite(bif_dist_all))) THEN
+         CALL CoLM_stop ('bifurcation distance must be finite and positive')
+      ELSEIF (any(bif_dist_all <= 0._r8)) THEN
+         CALL CoLM_stop ('bifurcation distance must be finite and positive')
+      ENDIF
+      IF (any(.not. ieee_is_finite(bif_elev_all))) THEN
+         CALL CoLM_stop ('bifurcation elevation contains a non-finite value')
+      ENDIF
+      IF (any(.not. ieee_is_finite(bif_wdth_all))) THEN
+         CALL CoLM_stop ('bifurcation width contains a non-finite value')
+      ELSEIF (any(bif_wdth_all < 0._r8)) THEN
+         CALL CoLM_stop ('bifurcation width must be non-negative')
+      ENDIF
+      IF (any(.not. ieee_is_finite(bif_mann_all))) THEN
+         CALL CoLM_stop ('bifurcation Manning coefficient contains a non-finite value')
+      ENDIF
+
+      DO ilev = 1, npthlev_bif
+         IF (any(bif_wdth_all(ilev, :) > 0._r8) .and. bif_mann_all(ilev) <= 0._r8) THEN
+            CALL CoLM_stop ('active bifurcation layer requires a positive Manning coefficient')
+         ENDIF
+      ENDDO
+
+      DO ip = 1, totalnpthout
+         IF (bif_upst_all(ip) < 1 .or. bif_upst_all(ip) > totalnumucat) CALL CoLM_stop ( &
+            'bifurcation upstream index out of range')
+         IF (bif_down_all(ip) > totalnumucat) CALL CoLM_stop ('bifurcation downstream index out of range')
+         IF (bif_down_all(ip) == bif_upst_all(ip)) CALL CoLM_stop ('bifurcation self-loop pathway is invalid')
+         IF (.not. any(bif_wdth_all(:, ip) > 0._r8)) THEN
+            CALL CoLM_stop ('bifurcation pathway has no active positive-width layer')
+         ENDIF
+         ! Zero-width layers are inactive, including leading or interior gaps.
+         ! Their elevations may be sentinels; compare only active sills without
+         ! renumbering layers (layer 1 is channel flow, layers 2+ are overland).
+         prev_active_lev = 0
+         DO ilev = 1, npthlev_bif
+            IF (bif_wdth_all(ilev, ip) <= 0._r8) CYCLE
+            IF (prev_active_lev > 0) THEN
+               IF (bif_elev_all(ilev, ip) < bif_elev_all(prev_active_lev, ip)) THEN
+                  CALL CoLM_stop ( &
+                     'active bifurcation layer elevation must be non-decreasing')
+               ENDIF
+            ENDIF
+            prev_active_lev = ilev
+         ENDDO
+      ENDDO
+
+   END SUBROUTINE read_bifurcation_global_arrays
+
+   ! ---------
+   SUBROUTINE localize_bifurcation_path_indices (path_upst, path_down_ucid, path_down_local)
+
+   IMPLICIT NONE
+
+   integer, intent(inout) :: path_upst(:)
+   integer, intent(in)    :: path_down_ucid(:)
+   integer, intent(out)   :: path_down_local(:)
+   integer :: ip, i
+
+      DO ip = 1, size(path_upst)
+         DO i = 1, numucat
+            IF (ucat_ucid(i) == path_upst(ip)) THEN
+               path_upst(ip) = i
+               EXIT
+            ENDIF
+         ENDDO
+      ENDDO
+
+      path_down_local = -1
+      DO ip = 1, size(path_down_ucid)
+         DO i = 1, numucat
+            IF (ucat_ucid(i) == path_down_ucid(ip)) THEN
+               path_down_local(ip) = i
+               EXIT
+            ENDIF
+         ENDDO
+      ENDDO
+
+   END SUBROUTINE localize_bifurcation_path_indices
 
 END MODULE MOD_Grid_RiverLakeNetwork
 #endif

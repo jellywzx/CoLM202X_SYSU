@@ -9,8 +9,8 @@
 !    Select one of the following options.
 #undef LULC_USGS
 #undef LULC_IGBP
-#undef LULC_IGBP_PFT
-#define LULC_IGBP_PC
+#define LULC_IGBP_PFT
+#undef LULC_IGBP_PC
 
 ! 2.1 3D Urban model (put it temporarily here):
 #undef URBAN_MODEL
@@ -63,10 +63,9 @@
 #undef GridRiverLakeFlow
 #endif
 
-#undef GridRiverLakeSediment
-#if (!defined GridRiverLakeFlow)
-#undef GridRiverLakeSediment
-#endif
+! NOTE: the former standalone river-lake sediment macro has been retired.
+! Sediment is now a TRACER 'particle' species and is compiled/activated
+! under #ifdef TRACER together with GridRiverLakeFlow.
 
 ! 7. If defined, BGC model is used.
 #undef BGC
@@ -104,3 +103,38 @@
 
 ! 12. Hyperspectral scheme.
 #undef HYPERSPECTRAL
+
+! 12b. If defined, extended canopy interception schemes are enabled.
+#define extend_interception
+
+! 13. If defined, the tracer subsystem is enabled (isotope, solute,
+!     particle, and gas families).
+!     This repository template currently enables TRACER; switch to #undef
+!     TRACER only for builds that intentionally exclude all tracer species.
+#define TRACER
+!    Conflicts: TRACER requires VariablySaturatedFlow soil hydrology
+!    (vanGenuchten_Mualem_SOIL_MODEL). Campbell_SOIL_MODEL cannot silently
+!    disable TRACER because that changes the requested physics at compile time.
+#if (defined TRACER) && (defined Campbell_SOIL_MODEL)
+#error "TRACER requires vanGenuchten_Mualem_SOIL_MODEL; disable TRACER explicitly before using Campbell_SOIL_MODEL"
+#endif
+!    Dependency: only the routing-borne TRACER species require GridRiverLakeFlow
+!    (in-river isotope transport in MOD_Tracer_RiverLake, and the sediment
+!    particle species). Those are compiled only when GridRiverLakeFlow is also
+!    defined. Land tracers do not route and build without it, so no hard error
+!    is raised here -- SinglePoint forces GridRiverLakeFlow off (section 6),
+!    which made TRACER impossible to build for a single point at all.
+
+! 13b. Methane gas provider.
+!     Activation is runtime: register a tracer named "CH4" or "METHANE"
+!     with type="gas" in the &nl_colm DEF_TRACER_NAMES / DEF_TRACER_TYPES
+!     namelist. The methane module is compiled whenever both TRACER and BGC
+!     are defined; its lifecycle registrar attaches the CH4 hooks and index.
+!     A configured CH4 row without that compiled provider fails at startup.
+!     Additional dependency: requires LULC_IGBP_PFT or LULC_IGBP_PC for
+!     pftfrac access (per-PFT NPP and root-respiration aggregation).
+#if (defined TRACER) && (defined BGC)
+#if (!defined LULC_IGBP_PFT && !defined LULC_IGBP_PC)
+#error "Methane (TRACER+BGC) requires LULC_IGBP_PFT or LULC_IGBP_PC for pftfrac access."
+#endif
+#endif

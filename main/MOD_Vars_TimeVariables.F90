@@ -452,6 +452,7 @@ MODULE MOD_Vars_TimeVariables
 #endif
 #ifdef GridRiverLakeFlow
    USE MOD_Grid_RiverLakeTimeVars
+   USE MOD_Grid_RiverLakeHistState, only: write_gridriverlake_hist_restart
 #endif
 #ifdef URBAN_MODEL
    USE MOD_Urban_Vars_TimeVariables
@@ -1109,6 +1110,17 @@ CONTAINS
    USE MOD_Vars_Global
    USE MOD_Vars_TimeInvariants, only: dz_lake
    USE MOD_Const_LC, only: patchtypes
+#ifdef TRACER
+   USE MOD_Tracer_Defs, only: ntracers
+#endif
+#ifdef TRACER
+   USE MOD_Tracer_Rest, only: write_tracer_restart_all
+#endif
+#ifdef GridRiverLakeFlow
+#ifdef TRACER
+   USE MOD_Tracer_RiverLake, only: write_tracer_restart
+#endif
+#endif
    IMPLICIT NONE
 
    integer, intent(in) :: idate(3)
@@ -1146,6 +1158,9 @@ CONTAINS
       CALL ncio_define_dimension_vector (file_restart, landpatch, 'soilsnow', nl_soil-maxsnl)
       CALL ncio_define_dimension_vector (file_restart, landpatch, 'soil',     nl_soil)
       CALL ncio_define_dimension_vector (file_restart, landpatch, 'lake',     nl_lake)
+#ifdef TRACER
+         CALL ncio_define_dimension_vector (file_restart, landpatch, 'tracer', ntracers)
+#endif
 
 IF(DEF_USE_PLANTHYDRAULICS)THEN
       CALL ncio_define_dimension_vector (file_restart, landpatch, 'vegnodes', nvegwcs)
@@ -1249,6 +1264,16 @@ ENDIF
       CALL ncio_write_vector (file_restart, 'fm   ', 'patch', landpatch, fm   , compress) ! integral of profile FUNCTION for momentum
       CALL ncio_write_vector (file_restart, 'fh   ', 'patch', landpatch, fh   , compress) ! integral of profile FUNCTION for heat
       CALL ncio_write_vector (file_restart, 'fq   ', 'patch', landpatch, fq   , compress) ! integral of profile FUNCTION for moisture
+#ifdef TRACER
+         IF (allocated(waterstorage)) THEN
+            CALL write_tracer_restart_all(file_restart, maxsnl, nl_soil, numpatch, &
+               ldew_rain, ldew_snow, wliq_soisno, wice_soisno, wa, wdsrf, wetwat, scv, &
+               compress, waterstorage)
+         ELSE
+            CALL write_tracer_restart_all(file_restart, maxsnl, nl_soil, numpatch, &
+               ldew_rain, ldew_snow, wliq_soisno, wice_soisno, wa, wdsrf, wetwat, scv, compress)
+         ENDIF
+#endif
 
 IF (DEF_USE_IRRIGATION) THEN
       CALL ncio_write_vector (file_restart, 'irrig_rate            ' , 'patch',landpatch,irrig_rate            , compress)
@@ -1295,6 +1320,11 @@ ENDIF
 #ifdef GridRiverLakeFlow
       file_restart = trim(dir_restart)// '/'//trim(cdate)//'/' // trim(site) //'_restart_gridriver_'//trim(cdate)//'_lc'//trim(cyear)//'.nc'
       CALL WRITE_GridRiverLakeTimeVars (file_restart)
+      CALL write_gridriverlake_hist_restart (file_restart)
+#ifdef TRACER
+         CALL write_tracer_restart(file_restart)
+#endif
+      CALL commit_GridRiverLakeRestart (file_restart)
 #endif
 
 #if (defined URBAN_MODEL)

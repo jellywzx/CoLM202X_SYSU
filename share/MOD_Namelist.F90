@@ -12,6 +12,7 @@ MODULE MOD_Namelist
 !-----------------------------------------------------------------------
 
    USE MOD_Precision, only: r8
+   USE, INTRINSIC :: ieee_arithmetic, ONLY: ieee_is_finite
    IMPLICIT NONE
    SAVE
 
@@ -237,7 +238,8 @@ MODULE MOD_Namelist
 ! ----- Part 11: parameterization schemes -----
 ! ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   integer :: DEF_Interception_scheme = 1  !1:CoLM；2:CLM4.5; 3:CLM5; 4:Noah-MP; 5:MATSIRO; 6:VIC; 7:JULES
+   integer :: DEF_Interception_scheme = 1  !1:CoLM；2:CLM4.5; 3:CLM5; 4:Noah-MP; 5:MATSIRO; 6:VIC; 7:JULES; 8:CoLM202x
+   real(r8) :: DEF_MATSIRO_CWCAP_SCALE = 1.0_r8
 
    ! ----- SOIL parameters and supercool water setting ------
    integer :: DEF_THERMAL_CONDUCTIVITY_SCHEME = 4  ! Options for soil thermal conductivity schemes
@@ -333,25 +335,118 @@ MODULE MOD_Namelist
    integer  :: DEF_Reservoir_Method         = 0
    real(r8) :: DEF_GRIDBASED_ROUTING_MAX_DT = 3600.
 
-   ! ----- sediment module -----
-   logical  :: DEF_USE_SEDIMENT        = .false.
-   real(r8) :: DEF_SED_LAMBDA          = 0.4
-   real(r8) :: DEF_SED_LYRDPH          = 0.00005
-   real(r8) :: DEF_SED_DENSITY         = 2.65
-   real(r8) :: DEF_SED_WATER_DENSITY   = 1.0
-   real(r8) :: DEF_SED_VISKIN          = 1.0e-6
-   real(r8) :: DEF_SED_VONKAR          = 0.4
-   real(r8) :: DEF_SED_PSET            = 1.0
-   integer  :: DEF_SED_TOTLYRNUM       = 5
-   real(r8) :: DEF_SED_CFL_ADV         = 0.5
-   real(r8) :: DEF_SED_IGNORE_DPH      = 0.05
-   real(r8) :: DEF_SED_DT_MAX          = 3600.
-   character(len=256) :: DEF_SED_DIAMETER = "0.0002,0.002,0.02"
-   real(r8) :: DEF_SED_PYLD            = 0.01
-   real(r8) :: DEF_SED_PYLDC           = 2.0
-   real(r8) :: DEF_SED_PYLDPC          = 2.0
-   real(r8) :: DEF_SED_DSYLUNIT        = 1.0e-6
+   ! ----- levee module -----
+   logical  :: DEF_USE_LEVEE           = .false.
 
+   ! ----- bifurcation module -----
+   logical  :: DEF_USE_BIFURCATION     = .false.
+
+   ! ----- tracer module -----
+   logical  :: DEF_TRACER_USE_FRACTIONATION = .false.
+   ! Air diffusivity ratios used by the kinetic (Craig-Gordon) term.
+   ! MERLIVAT1978 (1.0285 / 1.0251) is the default so the shipped reference
+   ! experiment reproduces IsoGSM, including its kinetic
+   ! eps_k(HDO)/eps_k(18O) = 0.88 and d-excess response.  CAPPA2003
+   ! (1.03189 / 1.01636) is an alternative laboratory-based sensitivity
+   ! choice.  The selected pair is applied consistently across CoLM surface
+   ! processes; it is not physically required to match the atmospheric
+   ! forcing producer.
+   character(len=16) :: DEF_TRACER_KINETIC_SCHEME = 'MERLIVAT1978'
+   ! Supersaturation slope for vapour->ice deposition, S = 1 - slope*T[C]
+   ! (Jouzel & Merlivat 1984).  Ice growing into supersaturated vapour
+   ! cannot stay in isotopic equilibrium, so the effective solid-vapour
+   ! alpha falls below alpha_eq; without this term frost/rime deposited at
+   ! sub-freezing temperatures comes out too enriched.  0.003 is the
+   ! IsoGSM value (gsml/CLD1/lrgscl.F:198); published GCM choices span
+   ! 0.002-0.004.  Set to 0 to recover pure equilibrium deposition.
+   real(r8) :: DEF_TRACER_ICE_SUPERSAT_SLOPE = 0.003_r8
+   ! Humidity cap for the Craig-Gordon evaporate ratio, h = min(RH, this).
+   ! R_E carries a 1/(1-h) factor that the host water flux cancels, so this
+   ! cap is a numerical guard, not physics: every 0.01 shaved off it
+   ! truncates real depletion.  At 25 C with soil water at -5 permil and
+   ! vapour at -12 permil, the h=0.99 evaporate is near -254 permil while
+   ! the former 0.95 cap reported only -75 permil, systematically
+   ! under-enriching residual soil water in humid climates.
+   real(r8) :: DEF_TRACER_CG_RELHUM_MAX = 0.99_r8
+   ! Kinetic fractionation law for evaporation from OPEN WATER (lake and
+   ! water-body patches).  'MJ79' is the wind-dependent Merlivat & Jouzel
+   ! (1979) law used by IsoGSM (gsml/ISOTOPE/frkin.F); 'EXPONENT' falls back
+   ! to the n=2/3 diffusivity exponent, which is appropriate to soil pores
+   ! but overstates open-water kinetic fractionation roughly threefold
+   ! (~19 vs ~6 permil for 18O at low wind).
+   character(len=16) :: DEF_TRACER_OPEN_WATER_KINETIC = 'MJ79'
+   ! Mass of the surface skin (mm water equivalent) that can exchange
+   ! isotopically during SUBLIMATION within one timestep.  Applying
+   ! Craig-Gordon to a whole snow layer treats tens of mm of ice as one
+   ! well-mixed reservoir and over-enriches the pack; physically only the
+   ! top few mm exchange, while deeper mass leaves bodily as the surface
+   ! retreats.  Set very large to recover the old layer-mixed behaviour, or
+   ! 0 for IsoGSM's non-fractionating sublimation (gsml/moninp.F:384-389).
+   real(r8) :: DEF_TRACER_SUBL_SKIN_MM = 5.0_r8
+   ! Kinetic fractionation law for SOIL evaporation.  'RESISTANCE' weights
+   ! the turbulent (n=2/3) and pore-diffusion (n=1) exponents by CoLM's own
+   ! aerodynamic and soil-surface resistances, so the kinetic effect grows
+   ! from ~19 to ~28.5 permil (18O) as the evaporation front retreats into
+   ! the pores.  'EXPONENT' pins it at the wet-soil n=2/3 value.
+   character(len=16) :: DEF_TRACER_SOIL_KINETIC = 'RESISTANCE'
+   ! Liquid-phase molecular diffusion of isotopes between soil layers.
+   ! Advection alone cannot produce the peak-shaped delta profile around an
+   ! evaporation front (Barnes & Allison 1983), which is the feature soil
+   ! water isotope profiles are usually compared against.  Diffusion is an
+   ! internal layer-to-layer exchange, so it is exactly mass conserving.
+   logical  :: DEF_TRACER_SOIL_DIFFUSION = .true.
+   ! Vapour-phase isotope diffusion through soil pores, added to the liquid
+   ! term.  Required for the Barnes & Allison (1983) profile: above a dry
+   ! surface the evaporation front sits inside the soil and transport is
+   ! through pore air.  Its moisture dependence is the OPPOSITE of the liquid
+   ! term (air-filled porosity), so it dominates exactly where the liquid film
+   ! shuts down -- ~30x the liquid term at theta = 0.05, ~0.5% at theta = 0.40.
+   logical  :: DEF_TRACER_SOIL_VAPOR_DIFFUSION = .true.
+   ! Degree of two-way equilibrium exchange, per timestep, between
+   ! canopy-intercepted liquid water and ambient vapour (0 = off, 1 = full
+   ! equilibrium).  Wet leaves keep trading molecules with the surrounding
+   ! vapour even at zero net water flux; IsoGSM applies the same device to
+   ! falling raindrops (gsml/CLD1/lrgscl.F, eqf = 0.95).  Ships at 0 because,
+   ! unlike the other terms added here, there is no reference land-surface
+   ! implementation to calibrate the degree against -- it is an empirical
+   ! per-step relaxation, so enabling it is a deliberate modelling choice.
+   real(r8) :: DEF_TRACER_CANOPY_EQUILIBRATION = 0.0_r8
+   ! Degree of isotopic exchange, per snow layer traversed, between
+   ! percolating meltwater and that layer's ice (0 = off, 1 = full ice-water
+   ! equilibrium at R_ice/alpha_ice_liq).  This is what makes early meltwater
+   ! come out depleted relative to the pack and the residual pack enrich
+   ! (Taylor et al. 2001) -- an effect of several permil that is clearly seen
+   ! in observations, so enabling it is usually the more realistic choice.
+   ! Ships at 0 only because the per-layer degree is an empirical parameter
+   ! with no reference land-surface implementation to calibrate it against;
+   ! values near 1 are appropriate for thin layers.  Internal ice<->water
+   ! exchange, so it is exactly mass conserving and needs no accumulator.
+   real(r8) :: DEF_TRACER_SNOWMELT_EQUILIBRATION = 0.0_r8
+   real(r8) :: DEF_TRACER_NSS_LEAF_WATER_PER_LAI = 0.12_r8
+   real(r8) :: DEF_TRACER_NSS_LEAF_PATH_LENGTH = 0.01_r8
+   real(r8) :: DEF_TRACER_NSS_LEAF_RB = 100._r8
+   integer  :: DEF_TRACER_NUM          = 2
+   ! Allowed aggregate bad entries before abort; zero preserves strict behavior.
+   integer  :: DEF_TRACER_BALANCE_ABORT_NBAD = 0
+   integer  :: DEF_TRACER_RESID_ABORT_NBAD   = 0
+   integer  :: DEF_TRACER_LULCC_ABORT_NBAD   = 0
+   character(len=256) :: DEF_TRACER_NAMES     = "H2_18O,HDO"
+   character(len=256) :: DEF_TRACER_TYPES     = "isotope,isotope"
+   character(len=256) :: DEF_TRACER_MRAT      = "20.0,19.0"
+   character(len=256) :: DEF_TRACER_REF_RATIO = "2.0052e-3,1.5576e-4"
+   character(len=256) :: DEF_TRACER_INIT_DELTA = "-10.0,-70.0"
+   character(len=256) :: DEF_TRACER_REACTIVE_DECAY_RATE = "0.0,0.0"
+   logical  :: DEF_TRACER_USE_SOIL_INIT = .false.
+   character(len=256) :: DEF_TRACER_SOIL_INIT_FILE = 'null'
+   character(len=256) :: DEF_TRACER_SOIL_INIT_VARS = 'soilwat_O18,soilwat_H2'
+   ! Per-species files carry unit/capability metadata plus optional
+   ! species-owned parameter groups; use NAME:path mappings where possible.
+   character(len=512) :: DEF_TRACER_PARAM_FILES = 'null'
+#if (defined TRACER) && (defined BGC)
+   ! ----- Generic BGC/reactive-tracer shared inputs -----
+   character(len=256) :: DEF_file_GIEMS = 'null'
+   integer :: DEF_wetland_finundation_scheme = 1
+#endif
    ! ----- others -----
    character(len=5)   :: DEF_precip_phase_discrimination_scheme = 'II'
 
@@ -450,6 +545,14 @@ MODULE MOD_Namelist
       character(len=256) :: CBL_tintalgo       = 'linear'
       integer            :: CBL_dtime          = 21600
       integer            :: CBL_offset         = 10800
+
+      ! NOTE: per-tracer forcing (precip/vapor fprefix/vname/dtime/offset/...)
+      ! is no longer carried in DEF_forcing. Each tracer declares its OWN
+      ! forcing in its parameter file via &nl_colm_tracer_forcing, read by
+      ! main/TRACER/MOD_Tracer_ForcingInput.F90. The former global CSV fields
+      ! (tracer_precip_*/tracer_vapor_*) and legacy per-species shortcuts
+      ! (precipitation_O18_*/_H2_*, water_vapor_O18_*/_H2_*) were removed in
+      ! the per-species forcing refactor (2026-05-29).
    END type nl_forcing_type
 
    type (nl_forcing_type) :: DEF_forcing
@@ -1092,6 +1195,7 @@ CONTAINS
       DEF_LAI_MONTHLY,                        & !add by zhongwang wei @ sysu 2021/12/23
       DEF_NDEP_FREQUENCY,                     & !add by Fang Shang    @ pku  2023/08
       DEF_Interception_scheme,                & !add by zhongwang wei @ sysu 2022/05/23
+      DEF_MATSIRO_CWCAP_SCALE,               &
       DEF_SSP,                                & !add by zhongwang wei @ sysu 2023/02/07
 
       DEF_LAI_START_YEAR,                     &
@@ -1166,23 +1270,39 @@ CONTAINS
       DEF_Reservoir_Method,                   &
       DEF_GRIDBASED_ROUTING_MAX_DT,           &
 
-      DEF_USE_SEDIMENT,                       &
-      DEF_SED_LAMBDA,                         &
-      DEF_SED_LYRDPH,                         &
-      DEF_SED_DENSITY,                        &
-      DEF_SED_WATER_DENSITY,                  &
-      DEF_SED_VISKIN,                         &
-      DEF_SED_VONKAR,                         &
-      DEF_SED_PSET,                           &
-      DEF_SED_TOTLYRNUM,                      &
-      DEF_SED_CFL_ADV,                        &
-      DEF_SED_IGNORE_DPH,                     &
-      DEF_SED_DT_MAX,                         &
-      DEF_SED_DIAMETER,                       &
-      DEF_SED_PYLD,                           &
-      DEF_SED_PYLDC,                          &
-      DEF_SED_PYLDPC,                         &
-      DEF_SED_DSYLUNIT,                       &
+      DEF_USE_LEVEE,                          &
+      DEF_USE_BIFURCATION,                    &
+      DEF_TRACER_USE_FRACTIONATION,           &
+      DEF_TRACER_KINETIC_SCHEME,              &
+      DEF_TRACER_ICE_SUPERSAT_SLOPE,          &
+      DEF_TRACER_CG_RELHUM_MAX,               &
+      DEF_TRACER_OPEN_WATER_KINETIC,          &
+      DEF_TRACER_SUBL_SKIN_MM,                &
+      DEF_TRACER_SOIL_KINETIC,                &
+      DEF_TRACER_SOIL_DIFFUSION,              &
+      DEF_TRACER_SOIL_VAPOR_DIFFUSION,        &
+      DEF_TRACER_CANOPY_EQUILIBRATION,        &
+      DEF_TRACER_SNOWMELT_EQUILIBRATION,      &
+      DEF_TRACER_NSS_LEAF_WATER_PER_LAI,      &
+      DEF_TRACER_NSS_LEAF_PATH_LENGTH,        &
+      DEF_TRACER_NSS_LEAF_RB,                 &
+      DEF_TRACER_NUM,                         &
+      DEF_TRACER_BALANCE_ABORT_NBAD,          &
+      DEF_TRACER_RESID_ABORT_NBAD,            &
+      DEF_TRACER_LULCC_ABORT_NBAD,            &
+      DEF_TRACER_NAMES,                       &
+      DEF_TRACER_TYPES,                       &
+      DEF_TRACER_MRAT,                        &
+      DEF_TRACER_REF_RATIO,                   &
+      DEF_TRACER_INIT_DELTA,                  &
+      DEF_TRACER_REACTIVE_DECAY_RATE,         &
+      DEF_TRACER_USE_SOIL_INIT,               &
+      DEF_TRACER_SOIL_INIT_FILE,              &
+      DEF_TRACER_SOIL_INIT_VARS,              &
+      DEF_TRACER_PARAM_FILES,        &
+#if (defined TRACER) && (defined BGC)
+      DEF_file_GIEMS,                         &
+#endif
 
       DEF_precip_phase_discrimination_scheme, &
 
@@ -1296,7 +1416,29 @@ CONTAINS
          DEF_HIST_mode = 'one'
 #endif
 
-         IF (DEF_simulation_time%timestep > 3600.) THEN
+         ! Validate the history mode here, once, rather than letting each
+         ! writer decide.  The gridded writer branches IF 'one' ... ELSEIF
+         ! 'block', with no ELSE, so a typo silently produced no output at
+         ! all; the route-history writers now key on the same string, which
+         ! would have doubled that failure mode.
+         SELECT CASE (trim(adjustl(DEF_HIST_mode)))
+         CASE ('one', 'block')
+            DEF_HIST_mode = trim(adjustl(DEF_HIST_mode))
+         CASE DEFAULT
+            write(*,'(A,A,A)') 'Fatal ERROR: DEF_HIST_mode="', &
+               trim(DEF_HIST_mode), '" is invalid; use one or block.'
+            CALL CoLM_stop ()
+         END SELECT
+
+         IF (.not. ieee_is_finite(DEF_simulation_time%timestep)) THEN
+            write(*,*) '                  *****                  '
+            write(*,*) 'ERROR: timestep must be finite and greater than zero.'
+            CALL CoLM_Stop ()
+         ELSEIF (DEF_simulation_time%timestep <= 0._r8) THEN
+            write(*,*) '                  *****                  '
+            write(*,*) 'ERROR: timestep must be finite and greater than zero.'
+            CALL CoLM_Stop ()
+         ELSEIF (DEF_simulation_time%timestep > 3600._r8) THEN
             write(*,*) '                  *****                  '
             write(*,*) 'Warning: timestep should be less than or equal to 3600 seconds.'
             CALL CoLM_Stop ()
@@ -1319,6 +1461,86 @@ CONTAINS
          write(*,*) 'Note: DEF_USE_VariablySaturatedFlow is automaticlly set to .true.  '
          write(*,*) 'when defined CatchLateralFlow. '
          DEF_USE_VariablySaturatedFlow = .true.
+#endif
+#ifdef TRACER
+         SELECT CASE (trim(adjustl(DEF_TRACER_KINETIC_SCHEME)))
+         CASE ('CAPPA2003', 'Cappa2003', 'cappa2003')
+            DEF_TRACER_KINETIC_SCHEME = 'CAPPA2003'
+         CASE ('MERLIVAT1978', 'Merlivat1978', 'merlivat1978')
+            DEF_TRACER_KINETIC_SCHEME = 'MERLIVAT1978'
+         CASE DEFAULT
+            write(*,'(A,A,A)') 'Fatal ERROR: DEF_TRACER_KINETIC_SCHEME="', &
+               trim(DEF_TRACER_KINETIC_SCHEME), '" is invalid; use CAPPA2003 or MERLIVAT1978.'
+            CALL CoLM_stop ()
+         END SELECT
+         SELECT CASE (trim(adjustl(DEF_TRACER_OPEN_WATER_KINETIC)))
+         CASE ('MJ79', 'mj79', 'MERLIVAT_JOUZEL1979')
+            DEF_TRACER_OPEN_WATER_KINETIC = 'MJ79'
+         CASE ('EXPONENT', 'exponent')
+            DEF_TRACER_OPEN_WATER_KINETIC = 'EXPONENT'
+         CASE DEFAULT
+            write(*,'(A,A,A)') 'Fatal ERROR: DEF_TRACER_OPEN_WATER_KINETIC="', &
+               trim(DEF_TRACER_OPEN_WATER_KINETIC), '" is invalid; use MJ79 or EXPONENT.'
+            CALL CoLM_stop ()
+         END SELECT
+         IF (DEF_TRACER_CG_RELHUM_MAX <= 0._r8 .or. DEF_TRACER_CG_RELHUM_MAX >= 1._r8) THEN
+            write(*,*) 'Fatal ERROR: DEF_TRACER_CG_RELHUM_MAX must lie strictly ', &
+               'between 0 and 1 (it caps h in the Craig-Gordon 1/(1-h) factor).'
+            CALL CoLM_stop ()
+         ENDIF
+         SELECT CASE (trim(adjustl(DEF_TRACER_SOIL_KINETIC)))
+         CASE ('RESISTANCE', 'resistance')
+            DEF_TRACER_SOIL_KINETIC = 'RESISTANCE'
+         CASE ('EXPONENT', 'exponent')
+            DEF_TRACER_SOIL_KINETIC = 'EXPONENT'
+         CASE DEFAULT
+            write(*,'(A,A,A)') 'Fatal ERROR: DEF_TRACER_SOIL_KINETIC="', &
+               trim(DEF_TRACER_SOIL_KINETIC), '" is invalid; use RESISTANCE or EXPONENT.'
+            CALL CoLM_stop ()
+         END SELECT
+         IF (DEF_TRACER_SNOWMELT_EQUILIBRATION < 0._r8 .or. &
+             DEF_TRACER_SNOWMELT_EQUILIBRATION > 1._r8) THEN
+            write(*,*) 'Fatal ERROR: DEF_TRACER_SNOWMELT_EQUILIBRATION must lie ', &
+               'in [0,1] (it is a per-layer equilibration degree).'
+            CALL CoLM_stop ()
+         ENDIF
+         IF (DEF_TRACER_CANOPY_EQUILIBRATION < 0._r8 .or. &
+             DEF_TRACER_CANOPY_EQUILIBRATION > 1._r8) THEN
+            write(*,*) 'Fatal ERROR: DEF_TRACER_CANOPY_EQUILIBRATION must lie ', &
+               'in [0,1] (it is a per-step equilibration degree).'
+            CALL CoLM_stop ()
+         ENDIF
+         IF (DEF_TRACER_SUBL_SKIN_MM < 0._r8) THEN
+            write(*,*) 'Fatal ERROR: DEF_TRACER_SUBL_SKIN_MM must be >= 0 ', &
+               '(0 makes sublimation non-fractionating).'
+            CALL CoLM_stop ()
+         ENDIF
+         IF (DEF_TRACER_ICE_SUPERSAT_SLOPE < 0._r8) THEN
+            write(*,*) 'Fatal ERROR: DEF_TRACER_ICE_SUPERSAT_SLOPE must be >= 0 ', &
+               '(0 disables the Jouzel-Merlivat supersaturation term).'
+            CALL CoLM_stop ()
+         ENDIF
+         IF (DEF_TRACER_BALANCE_ABORT_NBAD < 0 .or. DEF_TRACER_RESID_ABORT_NBAD < 0 .or. &
+             DEF_TRACER_LULCC_ABORT_NBAD < 0) THEN
+            write(*,*) 'Fatal ERROR: DEF_TRACER_*_ABORT_NBAD values must be non-negative.'
+            CALL CoLM_stop ()
+         ENDIF
+         IF (.not. DEF_USE_VariablySaturatedFlow) THEN
+            write(*,*) '                  *****                  '
+            write(*,*) 'Fatal ERROR: TRACER requires DEF_USE_VariablySaturatedFlow = .true.'
+            write(*,*) 'Please enable VariablySaturatedFlow/vanGenuchten_Mualem soil hydrology'
+            write(*,*) 'or rebuild with #undef TRACER.'
+            CALL CoLM_stop ()
+         ENDIF
+         IF (DEF_USE_BIFURCATION .and. DEF_TRACER_NUM > 0) THEN
+            write(*,*) '                  *****                  '
+            write(*,*) 'Fatal ERROR: TRACER (DEF_TRACER_NUM > 0) and DEF_USE_BIFURCATION'
+            write(*,*) 'cannot be enabled together. River bifurcation forces a single global'
+            write(*,*) 'routing sub-step shared by every river system; coupling that to tracer'
+            write(*,*) 'transport is prohibitively slow. Disable DEF_USE_BIFURCATION, or set'
+            write(*,*) 'DEF_TRACER_NUM = 0 (or rebuild with #undef TRACER) for bifurcation runs.'
+            CALL CoLM_stop ()
+         ENDIF
 #endif
 #ifdef SinglePoint
          IF (DEF_Runoff_SCHEME == 0) THEN
@@ -1742,6 +1964,7 @@ CONTAINS
       CALL mpi_bcast (DEF_LAI_MONTHLY                        ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
       CALL mpi_bcast (DEF_NDEP_FREQUENCY                     ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
       CALL mpi_bcast (DEF_Interception_scheme                ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_MATSIRO_CWCAP_SCALE               ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
       CALL mpi_bcast (DEF_SSP                                ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
 
       CALL mpi_bcast (DEF_USE_CBL_HEIGHT                     ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
@@ -1819,23 +2042,40 @@ CONTAINS
       CALL mpi_bcast (DEF_Reservoir_Method                   ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
       CALL mpi_bcast (DEF_GRIDBASED_ROUTING_MAX_DT           ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
 
-      CALL mpi_bcast (DEF_USE_SEDIMENT                       ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_SED_LAMBDA                         ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_SED_LYRDPH                         ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_SED_DENSITY                        ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_SED_WATER_DENSITY                  ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_SED_VISKIN                         ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_SED_VONKAR                         ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_SED_PSET                           ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_SED_TOTLYRNUM                      ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_SED_CFL_ADV                        ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_SED_IGNORE_DPH                     ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_SED_DT_MAX                         ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_SED_DIAMETER                       ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_SED_PYLD                           ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_SED_PYLDC                          ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_SED_PYLDPC                         ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_SED_DSYLUNIT                       ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_USE_LEVEE                          ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_USE_BIFURCATION                    ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_USE_FRACTIONATION           ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_KINETIC_SCHEME              ,16  ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_ICE_SUPERSAT_SLOPE          ,1   ,mpi_double_precision,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_CG_RELHUM_MAX               ,1   ,mpi_double_precision,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_OPEN_WATER_KINETIC          ,16  ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_SUBL_SKIN_MM                ,1   ,mpi_double_precision,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_SOIL_KINETIC                ,16  ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_SOIL_DIFFUSION              ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_SOIL_VAPOR_DIFFUSION        ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_CANOPY_EQUILIBRATION         ,1   ,mpi_double_precision,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_SNOWMELT_EQUILIBRATION       ,1   ,mpi_double_precision,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_NSS_LEAF_WATER_PER_LAI      ,1   ,mpi_double_precision,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_NSS_LEAF_PATH_LENGTH        ,1   ,mpi_double_precision,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_NSS_LEAF_RB                 ,1   ,mpi_double_precision,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_NUM                         ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_BALANCE_ABORT_NBAD          ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_RESID_ABORT_NBAD            ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_LULCC_ABORT_NBAD            ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_NAMES                       ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_TYPES                       ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_MRAT                        ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_REF_RATIO                   ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_INIT_DELTA                  ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_REACTIVE_DECAY_RATE         ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_USE_SOIL_INIT               ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_SOIL_INIT_FILE              ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_SOIL_INIT_VARS              ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_PARAM_FILES        ,512 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+#if (defined TRACER) && (defined BGC)
+      CALL mpi_bcast (DEF_file_GIEMS                         ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_wetland_finundation_scheme         ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
+#endif
 
       CALL mpi_bcast (DEF_HISTORY_IN_VECTOR                  ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
 
@@ -1897,6 +2137,7 @@ CONTAINS
       CALL mpi_bcast (DEF_forcing%CBL_tintalgo               ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
       CALL mpi_bcast (DEF_forcing%CBL_dtime                  ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
       CALL mpi_bcast (DEF_forcing%CBL_offset                 ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
+      ! (per-tracer forcing fields removed; now per-species via MOD_Tracer_ForcingInput)
 #endif
 
       CALL sync_hist_vars (set_defaults = .true.)

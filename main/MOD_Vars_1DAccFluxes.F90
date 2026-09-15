@@ -11,6 +11,9 @@ MODULE MOD_Vars_1DAccFluxes
 #ifdef EXTERNAL_LAKE
    USE MOD_Lake_1DAccVars
 #endif
+#ifdef TRACER
+   USE MOD_Tracer_LandPhase, only: tracer_flush_acc_fluxes, tracer_accumulate_fluxes
+#endif
 
    real(r8) :: nac ! number of accumulation
    real(r8), allocatable :: nac_ln      (:)
@@ -1476,13 +1479,18 @@ CONTAINS
    END SUBROUTINE deallocate_acc_fluxes
 
    !-----------------------
-   SUBROUTINE FLUSH_acc_fluxes ()
+   SUBROUTINE FLUSH_acc_fluxes (flush_reactive)
 
       USE MOD_SPMD_Task
       USE MOD_LandPatch, only: numpatch
       USE MOD_LandUrban, only: numurban
       USE MOD_Vars_Global, only: spval
       IMPLICIT NONE
+      logical, intent(in), optional :: flush_reactive
+      logical :: flush_reactive_active
+
+      flush_reactive_active = .true.
+      IF (present(flush_reactive)) flush_reactive_active = flush_reactive
 
       IF (p_is_worker) THEN
 
@@ -1964,6 +1972,10 @@ CONTAINS
 
 #ifdef EXTERNAL_LAKE
       CALL Flush_LakeAccVars
+#endif
+
+#ifdef TRACER
+      IF (flush_reactive_active) CALL tracer_flush_acc_fluxes ()
 #endif
 
    END SUBROUTINE FLUSH_acc_fluxes
@@ -2873,6 +2885,10 @@ CONTAINS
 
 #ifdef EXTERNAL_LAKE
       CALL accumulate_LakeTimeVars
+#endif
+
+#ifdef TRACER
+      CALL tracer_accumulate_fluxes ()
 #endif
 
    END SUBROUTINE accumulate_fluxes
