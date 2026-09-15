@@ -1,0 +1,35 @@
+#!/bin/bash
+#BSUB -J Amazon_sed_0p25
+#BSUB -q normal
+#BSUB -e logs/Amazon_sed_0p25-e.out
+#BSUB -n 240
+#BSUB -R rusage[mem=150G]
+#BSUB -R "span[ptile=48]"
+
+set -euo pipefail
+
+source /share/home/dq089/soft/intel-env >/dev/null 2>&1
+export OMP_NUM_THREADS=1
+export HDF5_USE_FILE_LOCKING=FALSE
+ulimit -s unlimited
+
+NML="/share/home/dq134/wzx/CoLM/CoLM_0914/run/Amazon_sediment_0p25.nml"
+cd /share/home/dq134/wzx/CoLM/CoLM_0914/run/
+MPI=/share/home/dq089/soft/mpich-4.2.3-intel/bin/mpirun
+
+mkdir -p logs
+{
+  echo "job start: $(date)"
+  echo "host: $(hostname)"
+  echo "mpirun: $MPI"
+  ldd ./colm.x | egrep 'libnetcdf|libnetcdff|libhdf5|libmpi|libmpifort|libiomp5|libifcore|not found' || true
+} > logs/Amazon_sed_0p25_env.txt
+
+#"$MPI" -np 240 ./mksrfdata.x "${NML}" > logs/Amazon_sed_0p25_srf.txt 2>&1
+#"$MPI" -np 240 ./mkinidata.x "${NML}" > logs/Amazon_sed_0p25_ini.txt 2>&1
+"$MPI" -np 240 ./colm.x "${NML}" > logs/Amazon_ctl_colm.txt 2>&1
+
+
+
+exit 0
+#echo job end time is `date`

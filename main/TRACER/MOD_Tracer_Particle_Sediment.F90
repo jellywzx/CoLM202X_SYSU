@@ -90,6 +90,10 @@ MODULE MOD_Tracer_Particle_Sediment
    real(r8), parameter :: EXCH_ZD_MAX = 100._r8
    real(r8), parameter :: SED_BALANCE_ABS_TOL = 1.e-10_r8
    real(r8), parameter :: SED_BALANCE_REL_TOL = 1.e-10_r8
+   ! Numerical near-dry threshold for sediment carrier transport.
+   ! Shallower water is treated as a residual numerical film and must not
+   ! generate sediment advection CFL constraints.
+   real(r8), parameter :: SED_NEAR_DRY_DEPTH = 1.e-4_r8
 
    !-------------------------------------------------------------------------------------
    ! Static Data (read from DEF_UnitCatchment_file)
@@ -138,6 +142,12 @@ MODULE MOD_Tracer_Particle_Sediment
    real(r8), allocatable :: sed_acc_rivout(:)  ! Accumulated discharge*dt [numucat]
    real(r8), allocatable :: sed_acc_abs_rivout(:) ! Accumulated abs(discharge)*dt [numucat]
    real(r8), allocatable :: sed_acc_floodarea(:) ! Accumulated flood area*dt [numucat]
+   real(r8), allocatable :: sed_acc_carrier_time(:) ! Time with depth above sediment carrier threshold [s]
+   real(r8), allocatable :: sed_acc_wdsrf_min(:), sed_acc_wdsrf_max(:) ! Period min/max water depth [m]
+   real(r8), allocatable :: sed_acc_rivsto_min(:), sed_acc_rivsto_max(:) ! Period min/max carrier storage [m3]
+   real(r8), allocatable :: sed_acc_rivout_min(:), sed_acc_rivout_max(:) ! Period min/max face discharge [m3/s]
+   real(r8), allocatable :: sed_acc_pos_rivout(:), sed_acc_neg_rivout(:) ! Time-integrated +/- discharge [m3]
+   real(r8), allocatable :: sed_acc_near_dry_abs_rivout(:) ! Abs discharge filtered by instantaneous near-dry gate [m3]
    real(r8), allocatable :: sed_precip(:)      ! Accumulated precipitation [mm, for diagnostics]
    real(r8), allocatable :: sed_precip_yield(:) ! Accumulated (rate_mm_hr)^pyldpc * dt [numucat]
                                                 ! Pre-computed per forcing step to avoid Jensen bias
@@ -571,7 +581,7 @@ CONTAINS
    ! Main sediment calculation. Called from MOD_Grid_RiverLakeFlow after water routing.
    !-------------------------------------------------------------------------------------
    USE MOD_Grid_RiverLakeNetwork, only: numucat, topo_rivwth, topo_rivlen, &
-      topo_rivman, topo_area
+      topo_rivman, topo_area, ucat_next
    USE MOD_Const_Physical, only: grav
    IMPLICIT NONE
 
@@ -579,7 +589,7 @@ CONTAINS
 
    real(r8) :: sed_time_remaining, dt_morph, dt_adv, dt_adv_remaining
    real(r8) :: avg_v2, avg_wdsrf, avg_rivsto, avg_rivout, avg_abs_rivout
-   real(r8) :: sed_flow_cancel_ratio
+   real(r8) :: sed_flow_cancel_ratio, sed_carrier_wet_fraction
    real(r8), allocatable :: rivsto(:), rivout(:), rivout_abs(:), bed_area(:), fldfrc(:)
    logical,  allocatable :: wet_seen(:), shallow_seen(:), source_seen(:)
    logical,  allocatable :: susp_seen(:), bed_seen(:), exch_pos_seen(:), exch_neg_seen(:)
@@ -602,13 +612,17 @@ CONTAINS
    real(r8) :: max_es_raw_local, max_d_raw_local
    real(r8) :: sum_es_eff_local, sum_d_eff_local
    real(r8) :: max_es_eff_local, max_d_eff_local
+   real(r8) :: sum_inst_near_dry_abs_q_local
+   real(r8) :: sum_period_near_dry_abs_q_local, sum_period_near_dry_signed_q_local
    real(r8) :: precip_diag_global(3), diag_max_global(11), diag_sum_global(17)
+   real(r8) :: carrier_filter_diag_global(3)
    real(r8) :: dt_cfl_local, dt_cfl_global, dt_cell
    integer  :: n_wet_local, n_shallow_local, n_source_local
    integer  :: n_susp_local, n_bed_local
    integer  :: n_exchange_pos_local, n_exchange_neg_local
    integer  :: n_es_raw_local, n_d_raw_local, n_es_eff_local, n_d_eff_local
-   integer  :: n_flow_cancel_local, diag_count_global(12)
+   integer  :: n_flow_cancel_local, n_period_near_dry_local
+   integer  :: diag_count_global(12), carrier_filter_count_global(1)
    real(r8), parameter :: CFL_RIVOUT_EPS = 1.e-12_r8
 
       IF (.not. sediment_particle_enabled()) RETURN
@@ -652,10 +666,15 @@ CONTAINS
       sum_rivout_signed_local = 0._r8
       sum_rivout_abs_local = 0._r8
       max_flow_cancel_local = 0._r8
+      sum_inst_near_dry_abs_q_local = 0._r8
+      sum_period_near_dry_abs_q_local = 0._r8
+      sum_period_near_dry_signed_q_local = 0._r8
       sum_es_raw_local = 0._r8
       sum_d_raw_local = 0._r8
       sum_es_eff_local = 0._r8
       sum_d_eff_local = 0._r8
+      n_flow_cancel_local = 0
+      n_period_near_dry_local = 0
       wet_seen = .false.
       shallow_seen = .false.
       source_seen = .false.
@@ -688,7 +707,6 @@ CONTAINS
       max_d_raw_local = 0._r8
       max_es_eff_local = 0._r8
       max_d_eff_local = 0._r8
-      n_flow_cancel_local = 0
       IF (numucat > 0) THEN
          max_sed_precip_local = maxval(sed_precip)
          max_precip_rate_local = max_sed_precip_local / max(precip_time_local, 1.e-20_r8)
@@ -724,11 +742,108 @@ CONTAINS
                avg_rivsto = sed_acc_rivsto(i) / sed_acc_time(i)
                avg_rivout = sed_acc_rivout(i) / sed_acc_time(i)
                avg_abs_rivout = sed_acc_abs_rivout(i) / sed_acc_time(i)
+               IF (avg_abs_rivout > CFL_RIVOUT_EPS) THEN
+                  sed_flow_cancel_ratio = 1._r8 - min(abs(avg_rivout) / avg_abs_rivout, 1._r8)
+               ELSE
+                  sed_flow_cancel_ratio = 0._r8
+               ENDIF
+               sed_carrier_wet_fraction = sed_acc_carrier_time(i) / sed_acc_time(i)
+               IF (iter_sed == 1) THEN
+                  sum_inst_near_dry_abs_q_local = sum_inst_near_dry_abs_q_local &
+                     + sed_acc_near_dry_abs_rivout(i) / sed_acc_time(i)
+               ENDIF
+
+               ! -------------------------------------------------------------
+               ! TEMP DEBUG: diagnose cells producing very small sediment CFL
+               ! Print cells that would require more than 10000 advection steps.
+               ! Remove after diagnosing the CFL problem.
+               ! -------------------------------------------------------------
+               IF (avg_rivsto > 0._r8 .and. avg_abs_rivout > CFL_RIVOUT_EPS) THEN
+
+                  dt_cell = sed_cfl_adv * avg_rivsto / avg_abs_rivout
+
+                  IF (dt_cell < dt_morph / 10000._r8) THEN
+
+                     WRITE(*,'(A)') '========== SED_CFL_DEBUG =========='
+                     WRITE(*,'(A,I0)')      'worker             = ', p_iam_worker
+                     WRITE(*,'(A,I0)')      'cell i             = ', i
+                     WRITE(*,'(A,I0)')      'ucat_next          = ', ucat_next(i)
+
+                     WRITE(*,'(A,ES20.10)') 'avg_rivsto [m3]    = ', avg_rivsto
+                     WRITE(*,'(A,ES20.10)') 'avg_rivout [m3/s]  = ', avg_rivout
+                     WRITE(*,'(A,ES20.10)') 'avg_abs_rivout     = ', avg_abs_rivout
+
+                     WRITE(*,'(A,ES20.10)') 'avg_wdsrf [m]      = ', avg_wdsrf
+                     WRITE(*,'(A,ES20.10)') 'avg_v2             = ', avg_v2
+                     WRITE(*,'(A,ES20.10)') 'sed_acc_time [s]   = ', sed_acc_time(i)
+                     WRITE(*,'(A,ES20.10)') 'carrier_wet_frac   = ', sed_carrier_wet_fraction
+                     WRITE(*,'(A,ES20.10)') 'min_wdsrf [m]      = ', sed_acc_wdsrf_min(i)
+                     WRITE(*,'(A,ES20.10)') 'max_wdsrf [m]      = ', sed_acc_wdsrf_max(i)
+                     WRITE(*,'(A,ES20.10)') 'min_rivsto [m3]    = ', sed_acc_rivsto_min(i)
+                     WRITE(*,'(A,ES20.10)') 'max_rivsto [m3]    = ', sed_acc_rivsto_max(i)
+                     WRITE(*,'(A,ES20.10)') 'min_rivout [m3/s]  = ', sed_acc_rivout_min(i)
+                     WRITE(*,'(A,ES20.10)') 'max_rivout [m3/s]  = ', sed_acc_rivout_max(i)
+                     WRITE(*,'(A,ES20.10)') 'int_pos_Q [m3]     = ', sed_acc_pos_rivout(i)
+                     WRITE(*,'(A,ES20.10)') 'int_neg_Q_abs [m3] = ', sed_acc_neg_rivout(i)
+                     WRITE(*,'(A,ES20.10)') 'inst_filtered_abs_Q[m3] = ', &
+                        sed_acc_near_dry_abs_rivout(i)
+
+                     WRITE(*,'(A,ES20.10)') 'dt_cell [s]        = ', dt_cell
+                     WRITE(*,'(A,ES20.10)') 'required_substeps  = ', &
+                        dt_morph / dt_cell
+
+                     WRITE(*,'(A,ES20.10)') 'flow_cancel_ratio  = ', sed_flow_cancel_ratio
+
+                     IF (avg_rivout > 0._r8) THEN
+                        WRITE(*,'(A)') 'flow_direction     = FORWARD'
+                     ELSEIF (avg_rivout < 0._r8) THEN
+                        WRITE(*,'(A)') 'flow_direction     = REVERSE'
+                     ELSE
+                        WRITE(*,'(A)') 'flow_direction     = ZERO-MEAN/OSCILLATORY'
+                     ENDIF
+
+                     WRITE(*,'(A)') '==================================='
+
+                  ENDIF
+               ENDIF
+
+               ! -------------------------------------------------------------
+               ! Defensive cleanup of an inconsistent near-dry carrier state.
+               !
+               ! Keep the DEBUG block above this point so that the raw state
+               ! that would otherwise control the CFL remains visible.
+               !
+               ! This catches cases such as the Amazon failure:
+               !   avg_wdsrf ~ 0
+               !   avg_rivout > 0
+               ! where the routing-period mean state is below the sediment
+               ! carrier threshold but a short wet pulse still contributed
+               ! forward-dominant carrier flux. Filter only the carrier flux:
+               ! avg_rivsto and avg_v2 still describe the period-mean water
+               ! state used by concentration, shear, and exchange diagnostics.
+               ! -------------------------------------------------------------
+               IF (avg_wdsrf <= SED_NEAR_DRY_DEPTH .and. &
+                   avg_abs_rivout > CFL_RIVOUT_EPS .and. avg_rivout > 0._r8 .and. &
+                   sed_flow_cancel_ratio <= 0.5_r8) THEN
+
+                  IF (iter_sed == 1) THEN
+                     sum_period_near_dry_abs_q_local = sum_period_near_dry_abs_q_local &
+                        + avg_abs_rivout
+                     sum_period_near_dry_signed_q_local = sum_period_near_dry_signed_q_local &
+                        + avg_rivout
+                     n_period_near_dry_local = n_period_near_dry_local + 1
+                  ENDIF
+
+                  avg_rivout = 0._r8
+                  avg_abs_rivout = 0._r8
+
+               ENDIF
+
+
                IF (iter_sed == 1) THEN
                   sum_rivout_signed_local = sum_rivout_signed_local + avg_rivout
                   sum_rivout_abs_local = sum_rivout_abs_local + avg_abs_rivout
                   IF (avg_abs_rivout > CFL_RIVOUT_EPS) THEN
-                     sed_flow_cancel_ratio = 1._r8 - min(abs(avg_rivout) / avg_abs_rivout, 1._r8)
                      max_flow_cancel_local = max(max_flow_cancel_local, sed_flow_cancel_ratio)
                      IF (sed_flow_cancel_ratio > 0.5_r8) n_flow_cancel_local = n_flow_cancel_local + 1
                   ENDIF
@@ -911,6 +1026,16 @@ CONTAINS
       sed_acc_rivout(:)    = 0._r8
       sed_acc_abs_rivout(:)= 0._r8
       sed_acc_floodarea(:) = 0._r8
+      sed_acc_carrier_time(:) = 0._r8
+      sed_acc_wdsrf_min(:) = huge(1._r8)
+      sed_acc_wdsrf_max(:) = 0._r8
+      sed_acc_rivsto_min(:) = huge(1._r8)
+      sed_acc_rivsto_max(:) = 0._r8
+      sed_acc_rivout_min(:) = huge(1._r8)
+      sed_acc_rivout_max(:) = -huge(1._r8)
+      sed_acc_pos_rivout(:) = 0._r8
+      sed_acc_neg_rivout(:) = 0._r8
+      sed_acc_near_dry_abs_rivout(:) = 0._r8
       sed_precip(:)        = 0._r8
       sed_precip_yield(:)  = 0._r8
       sed_precip_time      = 0._r8
@@ -990,6 +1115,9 @@ CONTAINS
          n_susp_local, n_bed_local, n_exchange_pos_local, n_exchange_neg_local, &
          n_es_raw_local, n_d_raw_local, n_es_eff_local, n_d_eff_local, &
          n_flow_cancel_local /)
+      carrier_filter_diag_global = (/ sum_inst_near_dry_abs_q_local, &
+         sum_period_near_dry_abs_q_local, sum_period_near_dry_signed_q_local /)
+      carrier_filter_count_global = (/ n_period_near_dry_local /)
 #ifdef CoLMDEBUG
 #ifdef USEMPI
       CALL mpi_allreduce(MPI_IN_PLACE, diag_max_global, size(diag_max_global), &
@@ -998,6 +1126,10 @@ CONTAINS
          MPI_REAL8, MPI_SUM, p_comm_worker, p_err)
       CALL mpi_allreduce(MPI_IN_PLACE, diag_count_global, size(diag_count_global), &
          MPI_INTEGER, MPI_SUM, p_comm_worker, p_err)
+      CALL mpi_allreduce(MPI_IN_PLACE, carrier_filter_diag_global, &
+         size(carrier_filter_diag_global), MPI_REAL8, MPI_SUM, p_comm_worker, p_err)
+      CALL mpi_allreduce(MPI_IN_PLACE, carrier_filter_count_global, &
+         size(carrier_filter_count_global), MPI_INTEGER, MPI_SUM, p_comm_worker, p_err)
 #endif
 
       ! Diagnostic summary of global sediment state (worker 0 only)
@@ -1018,6 +1150,12 @@ CONTAINS
             'Sediment flow diag: sum_rivout_signed=', diag_sum_global(12), &
             ', sum_rivout_abs=', diag_sum_global(13), &
             ', max_cancel=', diag_max_global(7), ', n_flow_cancel=', diag_count_global(12)
+         WRITE(*,'(A,ES10.3,A,ES10.3,A,ES10.3,A,I9)') &
+            'Sediment carrier filter diag: inst_near_dry_abs_q=', &
+            carrier_filter_diag_global(1), ', period_near_dry_abs_q=', &
+            carrier_filter_diag_global(2), ', period_near_dry_signed_q=', &
+            carrier_filter_diag_global(3), ', n_period_near_dry=', &
+            carrier_filter_count_global(1)
          WRITE(*,'(A,ES10.3,A,ES10.3,A,ES10.3,A,ES10.3,A,ES10.3)') &
             'Sediment diag: sum_sedinp=', diag_sum_global(4), &
             ', sum_sedout_down=', diag_sum_global(5), ', sum_sedout_up=', diag_sum_global(6), &
@@ -1095,12 +1233,30 @@ CONTAINS
          IF (irivsys(i) < 1 .or. irivsys(i) > size(dt_all)) CYCLE
          dt = dt_all(irivsys(i))
          sed_acc_time(i)      = sed_acc_time(i)      + dt
-         sed_acc_v2(i)        = sed_acc_v2(i)        + veloc(i)**2    * dt
          sed_acc_wdsrf(i)     = sed_acc_wdsrf(i)     + wdsrf(i)       * dt
          sed_acc_rivsto(i)    = sed_acc_rivsto(i)    + rivsto_input(i)* dt
-         sed_acc_rivout(i)    = sed_acc_rivout(i)    + rivout_fc(i)   * dt
-         sed_acc_abs_rivout(i)= sed_acc_abs_rivout(i)+ abs(rivout_fc(i)) * dt
          sed_acc_floodarea(i) = sed_acc_floodarea(i) + floodarea(i)   * dt
+         sed_acc_wdsrf_min(i) = min(sed_acc_wdsrf_min(i), wdsrf(i))
+         sed_acc_wdsrf_max(i) = max(sed_acc_wdsrf_max(i), wdsrf(i))
+         sed_acc_rivsto_min(i) = min(sed_acc_rivsto_min(i), rivsto_input(i))
+         sed_acc_rivsto_max(i) = max(sed_acc_rivsto_max(i), rivsto_input(i))
+         sed_acc_rivout_min(i) = min(sed_acc_rivout_min(i), rivout_fc(i))
+         sed_acc_rivout_max(i) = max(sed_acc_rivout_max(i), rivout_fc(i))
+         sed_acc_pos_rivout(i) = sed_acc_pos_rivout(i) + max(rivout_fc(i), 0._r8) * dt
+         sed_acc_neg_rivout(i) = sed_acc_neg_rivout(i) + max(-rivout_fc(i), 0._r8) * dt
+         ! Do not let a residual numerical water film carry sediment.
+         ! The Amazon failure showed depths of O(1e-5--1e-16 m) paired
+         ! with finite face fluxes, which drives V/|Q| -> 0 and destroys
+         ! the explicit sediment-advection CFL timestep.
+         IF (wdsrf(i) > SED_NEAR_DRY_DEPTH) THEN
+            sed_acc_carrier_time(i) = sed_acc_carrier_time(i) + dt
+            sed_acc_v2(i)         = sed_acc_v2(i)         + veloc(i)**2 * dt
+            sed_acc_rivout(i)     = sed_acc_rivout(i)     + rivout_fc(i) * dt
+            sed_acc_abs_rivout(i) = sed_acc_abs_rivout(i) + abs(rivout_fc(i)) * dt
+         ELSE
+            sed_acc_near_dry_abs_rivout(i) = sed_acc_near_dry_abs_rivout(i) &
+               + abs(rivout_fc(i)) * dt
+         ENDIF
       ENDDO
 
    END SUBROUTINE sediment_diag_accumulate
@@ -1306,6 +1462,16 @@ CONTAINS
       allocate(sed_acc_rivout   (numucat))
       allocate(sed_acc_abs_rivout(numucat))
       allocate(sed_acc_floodarea(numucat))
+      allocate(sed_acc_carrier_time(numucat))
+      allocate(sed_acc_wdsrf_min(numucat))
+      allocate(sed_acc_wdsrf_max(numucat))
+      allocate(sed_acc_rivsto_min(numucat))
+      allocate(sed_acc_rivsto_max(numucat))
+      allocate(sed_acc_rivout_min(numucat))
+      allocate(sed_acc_rivout_max(numucat))
+      allocate(sed_acc_pos_rivout(numucat))
+      allocate(sed_acc_neg_rivout(numucat))
+      allocate(sed_acc_near_dry_abs_rivout(numucat))
       allocate(sed_precip       (numucat))
       allocate(sed_precip_yield (numucat))
 
@@ -1331,6 +1497,16 @@ CONTAINS
       sed_acc_rivout = 0._r8
       sed_acc_abs_rivout = 0._r8
       sed_acc_floodarea = 0._r8
+      sed_acc_carrier_time = 0._r8
+      sed_acc_wdsrf_min = huge(1._r8)
+      sed_acc_wdsrf_max = 0._r8
+      sed_acc_rivsto_min = huge(1._r8)
+      sed_acc_rivsto_max = 0._r8
+      sed_acc_rivout_min = huge(1._r8)
+      sed_acc_rivout_max = -huge(1._r8)
+      sed_acc_pos_rivout = 0._r8
+      sed_acc_neg_rivout = 0._r8
+      sed_acc_near_dry_abs_rivout = 0._r8
       sed_precip    = 0._r8;  sed_precip_yield = 0._r8
       sed_precip_time = 0._r8
       sed_hist_acctime = 0._r8
@@ -3225,6 +3401,16 @@ CONTAINS
       IF (allocated(sed_acc_rivout)) deallocate(sed_acc_rivout)
       IF (allocated(sed_acc_abs_rivout)) deallocate(sed_acc_abs_rivout)
       IF (allocated(sed_acc_floodarea)) deallocate(sed_acc_floodarea)
+      IF (allocated(sed_acc_carrier_time)) deallocate(sed_acc_carrier_time)
+      IF (allocated(sed_acc_wdsrf_min)) deallocate(sed_acc_wdsrf_min)
+      IF (allocated(sed_acc_wdsrf_max)) deallocate(sed_acc_wdsrf_max)
+      IF (allocated(sed_acc_rivsto_min)) deallocate(sed_acc_rivsto_min)
+      IF (allocated(sed_acc_rivsto_max)) deallocate(sed_acc_rivsto_max)
+      IF (allocated(sed_acc_rivout_min)) deallocate(sed_acc_rivout_min)
+      IF (allocated(sed_acc_rivout_max)) deallocate(sed_acc_rivout_max)
+      IF (allocated(sed_acc_pos_rivout)) deallocate(sed_acc_pos_rivout)
+      IF (allocated(sed_acc_neg_rivout)) deallocate(sed_acc_neg_rivout)
+      IF (allocated(sed_acc_near_dry_abs_rivout)) deallocate(sed_acc_near_dry_abs_rivout)
       IF (allocated(sed_precip   )) deallocate(sed_precip   )
       IF (allocated(sed_precip_yield)) deallocate(sed_precip_yield)
       IF (allocated(a_sedcon     )) deallocate(a_sedcon     )

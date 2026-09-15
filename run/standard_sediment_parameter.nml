@@ -38,7 +38,7 @@
     DEF_SEDIMENT%precipitation_exponent = 2.0
     DEF_SEDIMENT%unit_conversion   = 1.0e-6
     DEF_SEDIMENT%cfl_adv           = 0.5                     ! advection CFL factor
-    DEF_SEDIMENT%max_timestep_s    = 3600.0                  ! max sediment substep [s]
+    DEF_SEDIMENT%max_timestep_s    = 1800.0                  ! max sediment substep [s]
 /
 
 &nl_colm_tracer_forcing

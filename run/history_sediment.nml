@@ -1,0 +1,54 @@
+&nl_colm_history
+
+   ! ================================================================
+   ! River routing variables
+   ! ================================================================
+
+   ! River discharge
+   DEF_hist_vars%discharge  = .true.
+
+   ! River water height / depth
+   DEF_hist_vars%riv_height = .true.
+
+   ! River velocity
+   DEF_hist_vars%riv_veloct = .true.
+
+   ! Flooded area
+   DEF_hist_vars%floodarea  = .true.
+
+   ! Flood fraction
+   DEF_hist_vars%floodfrc   = .true.
+
+   ! Surface water depth in HRU
+   DEF_hist_vars%wdsrf_hru  = .true.
+
+   ! Surface water velocity in HRU
+   DEF_hist_vars%veloc_hru  = .true.
+
+
+   ! ================================================================
+   ! Sediment variables
+   ! ================================================================
+
+   ! Suspended sediment concentration
+   DEF_hist_vars%sedcon     = .true.
+
+   ! Suspended sediment transport flux
+   DEF_hist_vars%sedout     = .true.
+
+   ! Bed-load sediment transport flux
+   DEF_hist_vars%bedout     = .true.
+
+   ! Hillslope erosion / sediment input to river
+   DEF_hist_vars%sedinp     = .true.
+
+   ! Net sediment exchange between water column and bed
+   DEF_hist_vars%netflw     = .true.
+
+   ! Active sediment layer storage
+   DEF_hist_vars%sedlayer   = .true.
+
+   ! Shear velocity
+   DEF_hist_vars%shearvel   = .true.
+
+/
