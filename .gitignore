@@ -1,6 +1,7 @@
 
 .DS_Store
 run/log_CaMa.txt
+run/logs/
 *.pyc
 __pycache__
 *.o

@@ -24,9 +24,9 @@
 #endif
 
 ! 3. If defined, debug information is output.
-#undef CoLMDEBUG
+#define CoLMDEBUG
 ! 3.1 If defined, range of variables is checked.
-#undef RangeCheck
+#define RangeCheck
 ! 3.1 If defined, surface data in vector is mapped to gridded data for checking.
 #undef SrfdataDiag
 
@@ -68,7 +68,7 @@
 ! under #ifdef TRACER together with GridRiverLakeFlow.
 
 ! 7. If defined, BGC model is used.
-#define BGC
+#undef BGC
 
 !    Conflicts :  only used when LULC_IGBP_PFT is defined.
 #ifndef LULC_IGBP_PFT
@@ -77,7 +77,7 @@
 #endif
 #endif
 ! 7.1 If defined, CROP model is used
-#define CROP
+#undef CROP
 !    Conflicts : only used when BGC is defined
 #ifndef BGC
 #undef CROP
