@@ -34,6 +34,8 @@ MODULE MOD_Tracer_Particle_Sediment
       DEF_hist_vars
    USE MOD_Vars_Global, only: spval
    USE, INTRINSIC :: IEEE_ARITHMETIC, only: ieee_is_finite
+   USE, INTRINSIC :: IEEE_EXCEPTIONS, only: ieee_get_halting_mode, ieee_set_halting_mode, &
+      ieee_invalid, ieee_divide_by_zero, ieee_overflow
    IMPLICIT NONE
    PRIVATE
 
@@ -545,11 +547,12 @@ CONTAINS
                'ERROR: sediment grain diameters must be finite and positive.'
             CALL CoLM_stop()
          ENDIF
-         IF (lyrdph < maxval(sDiam)) THEN
-            IF (p_is_io) WRITE(*,'(A)') &
-               'ERROR: sediment active_layer_depth must be at least the largest grain diameter.'
-            CALL CoLM_stop()
-         ENDIF
+            IF (lyrdph < maxval(sDiam)) THEN
+               IF (p_is_io) WRITE(*,'(A,ES12.4,A,ES12.4)') &
+                  'WARNING: sediment active_layer_depth is smaller than max grain diameter; keep user value. lyrdph=', &
+                  lyrdph, ', max_sDiam=', maxval(sDiam)
+               ! 不再执行：lyrdph = maxval(sDiam)
+            ENDIF
       ENDIF
       IF (allocated(setvel)) THEN
          IF (any(.not. ieee_is_finite(setvel)) .or. any(setvel < 0._r8)) THEN
@@ -595,7 +598,7 @@ CONTAINS
    logical,  allocatable :: susp_seen(:), bed_seen(:), exch_pos_seen(:), exch_neg_seen(:)
    logical,  allocatable :: es_raw_seen(:), d_raw_seen(:), es_eff_seen(:), d_eff_seen(:)
    real(r8) :: precip_time_local
-   integer  :: i, iter_sed, iter_adv
+   integer  :: i, ised, iter_sed, iter_adv
    integer  :: clk_total_start, clk_total_end
    integer  :: clk_phase_start, clk_phase_end, clk_rate
    real(r8) :: t_total, t_yield, t_adv, t_input, t_exchange, t_layer, t_diag
@@ -617,12 +620,14 @@ CONTAINS
    real(r8) :: precip_diag_global(3), diag_max_global(11), diag_sum_global(17)
    real(r8) :: carrier_filter_diag_global(3)
    real(r8) :: dt_cfl_local, dt_cfl_global, dt_cell
+   real(r8) :: sedout_val, bedout_val, netflw_val, d_eff_val
    integer  :: n_wet_local, n_shallow_local, n_source_local
    integer  :: n_susp_local, n_bed_local
    integer  :: n_exchange_pos_local, n_exchange_neg_local
    integer  :: n_es_raw_local, n_d_raw_local, n_es_eff_local, n_d_eff_local
    integer  :: n_flow_cancel_local, n_period_near_dry_local
    integer  :: diag_count_global(12), carrier_filter_count_global(1)
+   logical  :: invalid_sediment_found
    real(r8), parameter :: CFL_RIVOUT_EPS = 1.e-12_r8
 
       IF (.not. sediment_particle_enabled()) RETURN
@@ -952,52 +957,75 @@ CONTAINS
             CALL system_clock(clk_phase_end)
             IF (clk_rate > 0) t_adv = t_adv + real(clk_phase_end - clk_phase_start, r8) / real(clk_rate, r8)
 
+            CALL debug_check_sediment_fields('after advection', iter_sed, iter_adv, &
+               dt_morph, dt_adv, dt_cfl_global, rivout, rivout_abs, rivsto, invalid_sediment_found)
+            IF (invalid_sediment_found) THEN
+               CALL CoLM_stop('invalid finite value in sediment fields after advection')
+            ENDIF
+
             CALL system_clock(clk_phase_start)
             CALL accumulate_sediment_output(dt_adv)
             CALL system_clock(clk_phase_end)
             IF (clk_rate > 0) t_diag = t_diag + real(clk_phase_end - clk_phase_start, r8) / real(clk_rate, r8)
 
-            IF (numucat > 0) THEN
-               max_sedcon_local = max(max_sedcon_local, maxval(sedcon))
-               max_sedout_local = max(max_sedout_local, maxval(abs(sedout)))
-               max_bedout_local = max(max_bedout_local, maxval(abs(bedout)))
-               max_sedinp_local = max(max_sedinp_local, maxval(sedinp))
-               max_netflw_local = max(max_netflw_local, &
-                  maxval(abs(netflw + netflw_adv_step)))
-               max_shearvel_local = max(max_shearvel_local, maxval(shearvel))
-               sum_sedinp_local = sum_sedinp_local + sum(sedinp) * dt_adv
-               sum_sedout_down_local = sum_sedout_down_local + sum(max(sedout, 0._r8)) * dt_adv
-               sum_sedout_up_local = sum_sedout_up_local + sum(max(-sedout, 0._r8)) * dt_adv
-               sum_sedout_abs_local = sum_sedout_abs_local + sum(abs(sedout)) * dt_adv
-               sum_netflw_pos_local = sum_netflw_pos_local + &
-                  sum(max(netflw + netflw_adv_step, 0._r8)) * dt_adv
-               sum_netflw_neg_local = sum_netflw_neg_local + &
-                  sum(max(-(netflw + netflw_adv_step), 0._r8)) * dt_adv
-               sum_es_raw_local = sum_es_raw_local + sum(exch_es_raw) * dt_adv
-               sum_d_raw_local = sum_d_raw_local + sum(exch_d_raw) * dt_adv
-               max_es_raw_local = max(max_es_raw_local, maxval(exch_es_raw))
-               max_d_raw_local = max(max_d_raw_local, maxval(exch_d_raw))
-               sum_es_eff_local = sum_es_eff_local + sum(exch_es_eff) * dt_adv
-               sum_d_eff_local = sum_d_eff_local + &
-                  sum(exch_d_eff + exch_d_adv_step) * dt_adv
-               max_es_eff_local = max(max_es_eff_local, maxval(exch_es_eff))
-               max_d_eff_local = max(max_d_eff_local, &
-                  maxval(exch_d_eff + exch_d_adv_step))
+            CALL debug_check_sediment_fields('after accumulate_sediment_output', iter_sed, iter_adv, &
+               dt_morph, dt_adv, dt_cfl_global, rivout, rivout_abs, rivsto, invalid_sediment_found)
+            IF (invalid_sediment_found) THEN
+               CALL CoLM_stop('invalid finite value in sediment fields after accumulation')
+            ENDIF
 
-               wet_seen = wet_seen .or. (rivsto > 0._r8)
-               shallow_seen = shallow_seen .or. (rivsto > 0._r8 .and. rivsto < topo_rivwth * topo_rivlen * sed_ignore_dph)
-               source_seen = source_seen .or. (sum(sedinp, dim=1) > 0._r8)
-               susp_seen = susp_seen .or. (sum(abs(sedout), dim=1) > 0._r8)
-               bed_seen = bed_seen .or. (sum(abs(bedout), dim=1) > 0._r8)
-               exch_pos_seen = exch_pos_seen .or. &
-                  (sum(max(netflw + netflw_adv_step, 0._r8), dim=1) > 0._r8)
-               exch_neg_seen = exch_neg_seen .or. &
-                  (sum(max(-(netflw + netflw_adv_step), 0._r8), dim=1) > 0._r8)
-               es_raw_seen = es_raw_seen .or. (sum(exch_es_raw, dim=1) > 0._r8)
-               d_raw_seen = d_raw_seen .or. (sum(exch_d_raw, dim=1) > 0._r8)
-               es_eff_seen = es_eff_seen .or. (sum(exch_es_eff, dim=1) > 0._r8)
-               d_eff_seen = d_eff_seen .or. &
-                  (sum(exch_d_eff + exch_d_adv_step, dim=1) > 0._r8)
+            IF (numucat > 0) THEN
+               DO i = 1, numucat
+                  wet_seen(i) = wet_seen(i) .or. (rivsto(i) > 0._r8)
+                  shallow_seen(i) = shallow_seen(i) .or. &
+                     (rivsto(i) > 0._r8 .and. rivsto(i) < topo_rivwth(i) * topo_rivlen(i) * sed_ignore_dph)
+                  max_shearvel_local = max(max_shearvel_local, shearvel(i))
+
+                  DO ised = 1, nsed
+                     sedout_val = sedout(ised,i)
+                     bedout_val = bedout(ised,i)
+                     netflw_val = netflw(ised,i) + netflw_adv_step(ised,i)
+                     d_eff_val = exch_d_eff(ised,i) + exch_d_adv_step(ised,i)
+
+                     max_sedcon_local = max(max_sedcon_local, sedcon(ised,i))
+                     max_sedout_local = max(max_sedout_local, abs(sedout_val))
+                     max_bedout_local = max(max_bedout_local, abs(bedout_val))
+                     max_sedinp_local = max(max_sedinp_local, sedinp(ised,i))
+                     max_netflw_local = max(max_netflw_local, abs(netflw_val))
+                     max_es_raw_local = max(max_es_raw_local, exch_es_raw(ised,i))
+                     max_d_raw_local = max(max_d_raw_local, exch_d_raw(ised,i))
+                     max_es_eff_local = max(max_es_eff_local, exch_es_eff(ised,i))
+                     max_d_eff_local = max(max_d_eff_local, d_eff_val)
+
+                     sum_sedinp_local = sum_sedinp_local + sedinp(ised,i) * dt_adv
+                     sum_sedout_abs_local = sum_sedout_abs_local + abs(sedout_val) * dt_adv
+                     sum_es_raw_local = sum_es_raw_local + exch_es_raw(ised,i) * dt_adv
+                     sum_d_raw_local = sum_d_raw_local + exch_d_raw(ised,i) * dt_adv
+                     sum_es_eff_local = sum_es_eff_local + exch_es_eff(ised,i) * dt_adv
+                     sum_d_eff_local = sum_d_eff_local + d_eff_val * dt_adv
+
+                     IF (sedout_val > 0._r8) THEN
+                        sum_sedout_down_local = sum_sedout_down_local + sedout_val * dt_adv
+                        susp_seen(i) = .true.
+                     ELSEIF (sedout_val < 0._r8) THEN
+                        sum_sedout_up_local = sum_sedout_up_local - sedout_val * dt_adv
+                        susp_seen(i) = .true.
+                     ENDIF
+                     IF (bedout_val /= 0._r8) bed_seen(i) = .true.
+                     IF (sedinp(ised,i) > 0._r8) source_seen(i) = .true.
+                     IF (netflw_val > 0._r8) THEN
+                        sum_netflw_pos_local = sum_netflw_pos_local + netflw_val * dt_adv
+                        exch_pos_seen(i) = .true.
+                     ELSEIF (netflw_val < 0._r8) THEN
+                        sum_netflw_neg_local = sum_netflw_neg_local - netflw_val * dt_adv
+                        exch_neg_seen(i) = .true.
+                     ENDIF
+                     IF (exch_es_raw(ised,i) > 0._r8) es_raw_seen(i) = .true.
+                     IF (exch_d_raw(ised,i) > 0._r8) d_raw_seen(i) = .true.
+                     IF (exch_es_eff(ised,i) > 0._r8) es_eff_seen(i) = .true.
+                     IF (d_eff_val > 0._r8) d_eff_seen(i) = .true.
+                  ENDDO
+               ENDDO
             ENDIF
 
             dt_adv_remaining = dt_adv_remaining - dt_adv
@@ -1205,6 +1233,98 @@ CONTAINS
       ENDDO
 
    END SUBROUTINE accumulate_sediment_output
+
+   !-------------------------------------------------------------------------------------
+   SUBROUTINE debug_check_sediment_fields(context, iter_sed, iter_adv, dt_morph, dt_adv, &
+      dt_cfl_global, rivout, rivout_abs, rivsto, found)
+   !-------------------------------------------------------------------------------------
+   IMPLICIT NONE
+   character(len=*), intent(in) :: context
+   integer, intent(in) :: iter_sed, iter_adv
+   real(r8), intent(in) :: dt_morph, dt_adv, dt_cfl_global
+   real(r8), intent(in) :: rivout(:), rivout_abs(:), rivsto(:)
+   logical, intent(out) :: found
+   logical :: halt_invalid, halt_zero, halt_overflow
+
+      found = .false.
+
+      CALL ieee_get_halting_mode(ieee_invalid, halt_invalid)
+      CALL ieee_get_halting_mode(ieee_divide_by_zero, halt_zero)
+      CALL ieee_get_halting_mode(ieee_overflow, halt_overflow)
+      CALL ieee_set_halting_mode(ieee_invalid, .false.)
+      CALL ieee_set_halting_mode(ieee_divide_by_zero, .false.)
+      CALL ieee_set_halting_mode(ieee_overflow, .false.)
+
+      CALL debug_check_sediment_field(context, 'sedout', sedout, iter_sed, iter_adv, &
+         dt_morph, dt_adv, dt_cfl_global, rivout, rivout_abs, rivsto, found)
+      CALL debug_check_sediment_field(context, 'bedout', bedout, iter_sed, iter_adv, &
+         dt_morph, dt_adv, dt_cfl_global, rivout, rivout_abs, rivsto, found)
+      CALL debug_check_sediment_field(context, 'sedcon', sedcon, iter_sed, iter_adv, &
+         dt_morph, dt_adv, dt_cfl_global, rivout, rivout_abs, rivsto, found)
+      CALL debug_check_sediment_field(context, 'sedsto', sedsto, iter_sed, iter_adv, &
+         dt_morph, dt_adv, dt_cfl_global, rivout, rivout_abs, rivsto, found)
+      CALL debug_check_sediment_field(context, 'layer', layer, iter_sed, iter_adv, &
+         dt_morph, dt_adv, dt_cfl_global, rivout, rivout_abs, rivsto, found)
+      CALL debug_check_sediment_field(context, 'netflw', netflw, iter_sed, iter_adv, &
+         dt_morph, dt_adv, dt_cfl_global, rivout, rivout_abs, rivsto, found)
+
+      CALL ieee_set_halting_mode(ieee_invalid, halt_invalid)
+      CALL ieee_set_halting_mode(ieee_divide_by_zero, halt_zero)
+      CALL ieee_set_halting_mode(ieee_overflow, halt_overflow)
+
+   END SUBROUTINE debug_check_sediment_fields
+
+   !-------------------------------------------------------------------------------------
+   SUBROUTINE debug_check_sediment_field(context, field_name, field, iter_sed, iter_adv, &
+      dt_morph, dt_adv, dt_cfl_global, rivout, rivout_abs, rivsto, found)
+   !-------------------------------------------------------------------------------------
+   USE MOD_Grid_RiverLakeNetwork, only: numucat, ucat_next
+   IMPLICIT NONE
+   character(len=*), intent(in) :: context, field_name
+   real(r8), intent(in) :: field(:,:)
+   integer, intent(in) :: iter_sed, iter_adv
+   real(r8), intent(in) :: dt_morph, dt_adv, dt_cfl_global
+   real(r8), intent(in) :: rivout(:), rivout_abs(:), rivsto(:)
+   logical, intent(inout) :: found
+   integer :: i, ised
+
+      IF (found) RETURN
+      DO i = 1, numucat
+         DO ised = 1, nsed
+            IF (.not. ieee_is_finite(field(ised,i))) THEN
+               found = .true.
+               WRITE(*,'(A)') '========== SEDIMENT_FINITE_DEBUG =========='
+               WRITE(*,'(A,A)') 'context            = ', trim(context)
+               WRITE(*,'(A,A)') 'bad field          = ', trim(field_name)
+               WRITE(*,'(A,I0)') 'worker             = ', p_iam_worker
+               WRITE(*,'(A,I0)') 'cell i             = ', i
+               WRITE(*,'(A,I0)') 'sediment class     = ', ised
+               WRITE(*,'(A,I0)') 'ucat_next          = ', ucat_next(i)
+               WRITE(*,'(A,I0)') 'iter_sed           = ', iter_sed
+               WRITE(*,'(A,I0)') 'iter_adv           = ', iter_adv
+               WRITE(*,'(A,ES20.10)') 'dt_morph [s]       = ', dt_morph
+               WRITE(*,'(A,ES20.10)') 'dt_adv [s]         = ', dt_adv
+               WRITE(*,'(A,ES20.10)') 'dt_cfl_global [s]  = ', dt_cfl_global
+               WRITE(*,'(A,ES20.10)') 'bad value          = ', field(ised,i)
+               WRITE(*,'(A,ES20.10)') 'sedout             = ', sedout(ised,i)
+               WRITE(*,'(A,ES20.10)') 'bedout             = ', bedout(ised,i)
+               WRITE(*,'(A,ES20.10)') 'sedcon             = ', sedcon(ised,i)
+               WRITE(*,'(A,ES20.10)') 'sedsto [m3]        = ', sedsto(ised,i)
+               WRITE(*,'(A,ES20.10)') 'layer              = ', layer(ised,i)
+               WRITE(*,'(A,ES20.10)') 'netflw             = ', netflw(ised,i)
+               WRITE(*,'(A,ES20.10)') 'netflw_adv_step    = ', netflw_adv_step(ised,i)
+               WRITE(*,'(A,ES20.10)') 'exch_d_adv_step    = ', exch_d_adv_step(ised,i)
+               WRITE(*,'(A,ES20.10)') 'rivout [m3/s]      = ', rivout(i)
+               WRITE(*,'(A,ES20.10)') 'rivout_abs [m3/s]  = ', rivout_abs(i)
+               WRITE(*,'(A,ES20.10)') 'rivsto [m3]        = ', rivsto(i)
+               WRITE(*,'(A,ES20.10)') 'shearvel           = ', shearvel(i)
+               WRITE(*,'(A)') '=========================================='
+               RETURN
+            ENDIF
+         ENDDO
+      ENDDO
+
+   END SUBROUTINE debug_check_sediment_field
 
    !-------------------------------------------------------------------------------------
    SUBROUTINE sediment_diag_accumulate(dt_all, irivsys, ucatfilter, veloc, wdsrf, rivsto_input, rivout_fc, floodarea)
@@ -1552,7 +1672,7 @@ CONTAINS
       IF (diam >= 0.00303_r8) THEN
          cA = 80.9_r8
       ELSEIF (diam >= 0.00118_r8) THEN
-         cA = 134.6_r8;  cB = 31._r8 / 22._r8
+         cA = 134.6_r8;  cB = 31._r8 / 32._r8
       ELSEIF (diam >= 0.000565_r8) THEN
          cA = 55._r8
       ELSEIF (diam >= 0.000065_r8) THEN

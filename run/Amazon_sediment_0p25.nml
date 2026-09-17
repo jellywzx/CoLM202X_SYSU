@@ -9,7 +9,7 @@
    ! 1. Case
    ! -------------------------------------------------------------------
 
-   DEF_CASE_NAME = 'Amazon_sediment_tuning_0p25'
+   DEF_CASE_NAME = 'Amazon_sediment_0p25'
    ! -------------------------------------------------------------------
    ! 2. Domain
    ! -------------------------------------------------------------------
@@ -26,17 +26,17 @@
 
    DEF_simulation_time%greenwich    = .TRUE.
 
-   DEF_simulation_time%start_year   = 2000
+   DEF_simulation_time%start_year   = 2001
    DEF_simulation_time%start_month  = 1
    DEF_simulation_time%start_day    = 1
    DEF_simulation_time%start_sec    = 0
 
-   DEF_simulation_time%end_year     = 2005
+   DEF_simulation_time%end_year     = 2001
    DEF_simulation_time%end_month    = 12
    DEF_simulation_time%end_day      = 31
    DEF_simulation_time%end_sec      = 86400
 
-   DEF_simulation_time%spinup_year   = 2000
+   DEF_simulation_time%spinup_year   = 2001
    DEF_simulation_time%spinup_month  = 1
    DEF_simulation_time%spinup_day    = 1
    DEF_simulation_time%spinup_sec    = 0
@@ -49,11 +49,11 @@
    ! 4. Directories
    ! -------------------------------------------------------------------
 
-   DEF_dir_rawdata = '/share/home/dq013/zhwei/colm/data/CoLMrawdata/'
+   DEF_dir_rawdata = '/shr03/CoLMrawdata/'
 
-   DEF_dir_runtime = '/share/home/dq013/zhwei/colm/data/CoLMruntime/'
+   DEF_dir_runtime = '/shr03/CoLMruntime/'
 
-   DEF_dir_output  = '/share/home/dq134/wzx/CoLM/cases/'
+   DEF_dir_output  = '/home/weizx24/weizx24/cases/'
 
 
    ! -------------------------------------------------------------------
@@ -70,7 +70,7 @@
 
    DEF_USE_SoilInit = .true.
 
-   DEF_file_SoilInit = '/share/home/dq013/zhwei/colm/data/CoLMruntime/soilstate.nc'
+   DEF_file_SoilInit = '/shr03/CoLMruntime/soilstate.nc'
 
 
    ! -------------------------------------------------------------------
@@ -93,7 +93,7 @@
    ! 8. River routing
    ! -------------------------------------------------------------------
 
-   DEF_UnitCatchment_file = '/share/home/dq013/zhwei/colm/data/CoLMruntime/unitcatchment/grid_routing_data_15min_sed.nc'
+   DEF_UnitCatchment_file = '/shr03/CoLMruntime/unitcatchment/grid_routing_data_15min.nc'
 
    DEF_GRIDBASED_ROUTING_MAX_DT = 3600.
 
@@ -112,14 +112,14 @@
 
    ! Use an independent parameter file for tuning instead of modifying
    ! standard_sediment_parameter.nml directly.
-   DEF_TRACER_PARAM_FILES = 'SEDIMENT:/share/home/dq134/wzx/CoLM/CoLM_0914/run/standard_sediment_parameter.nml'
+   DEF_TRACER_PARAM_FILES = 'SEDIMENT:/stu02/weizx24/colm/CoLM202X_sed/run/sediment_parameter.nml'
 
 
    ! -------------------------------------------------------------------
    ! 10. Atmospheric forcing
    ! -------------------------------------------------------------------
 
-   DEF_forcing_namelist = '/share/home/dq134/wzx/CoLM/CoLM_0914/run/forcing/JRA3Q.nml'
+   DEF_forcing_namelist = '/stu02/weizx24/colm/CoLM202X_sed/run/forcing/JRA3Q.nml'
 
 
    ! -------------------------------------------------------------------
@@ -155,7 +155,7 @@
    DEF_HIST_vars_out_default = .false.
 
    ! Then selectively enable variables in a separate history namelist.
-   DEF_HIST_vars_namelist = '/share/home/dq134/wzx/CoLM/CoLM_0914/run/history_sediment.nml'
+   DEF_HIST_vars_namelist = '/home/weizx24/weizx24/colm/CoLM202X_sed/run/history_sediment.nml'
 
 
 /
