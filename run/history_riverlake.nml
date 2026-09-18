@@ -1,0 +1,42 @@
+&nl_colm_history
+
+   ! ============================================================
+   ! Grid-based river/lake routing
+   ! ============================================================
+
+   ! River/floodplain water depth
+   ! -> f_wdpth_ucat [m]
+   DEF_hist_vars%riv_height = .true.
+
+   ! River velocity
+   ! -> f_veloc_riv [m/s]
+   DEF_hist_vars%riv_veloct = .true.
+
+   ! River discharge
+   ! -> f_discharge [m3/s]
+   ! -> f_discharge_rivermouth [m3/s]
+   DEF_hist_vars%discharge = .true.
+
+   ! Flooded area and flooded fraction
+   ! -> f_floodarea [m2]
+   ! -> f_floodfrc [-]
+   DEF_hist_vars%floodfrc = .true.
+
+
+   ! ============================================================
+   ! Reservoir
+   ! ============================================================
+
+   ! Reservoir storage
+   ! -> volresv [m3]
+   DEF_hist_vars%volresv = .true.
+
+   ! Reservoir inflow
+   ! -> qresv_in [m3/s]
+   DEF_hist_vars%qresv_in = .true.
+
+   ! Reservoir outflow
+   ! -> qresv_out [m3/s]
+   DEF_hist_vars%qresv_out = .true.
+
+/
