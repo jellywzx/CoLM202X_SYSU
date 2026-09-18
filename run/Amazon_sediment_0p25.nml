@@ -9,7 +9,7 @@
    ! 1. Case
    ! -------------------------------------------------------------------
 
-   DEF_CASE_NAME = 'Amazon_sediment_tuning_0p25'
+   DEF_CASE_NAME = 'Amazon_sediment_0p25'
    ! -------------------------------------------------------------------
    ! 2. Domain
    ! -------------------------------------------------------------------
@@ -26,17 +26,17 @@
 
    DEF_simulation_time%greenwich    = .TRUE.
 
-   DEF_simulation_time%start_year   = 2000
+   DEF_simulation_time%start_year   = 2001
    DEF_simulation_time%start_month  = 1
    DEF_simulation_time%start_day    = 1
    DEF_simulation_time%start_sec    = 0
 
-   DEF_simulation_time%end_year     = 2005
+   DEF_simulation_time%end_year     = 2001
    DEF_simulation_time%end_month    = 12
    DEF_simulation_time%end_day      = 31
    DEF_simulation_time%end_sec      = 86400
 
-   DEF_simulation_time%spinup_year   = 2000
+   DEF_simulation_time%spinup_year   = 2001
    DEF_simulation_time%spinup_month  = 1
    DEF_simulation_time%spinup_day    = 1
    DEF_simulation_time%spinup_sec    = 0

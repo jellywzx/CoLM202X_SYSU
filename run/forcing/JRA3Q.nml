@@ -1,7 +1,7 @@
 &nl_colm_forcing
 
    ! ----- forcing -----
-   DEF_dir_forcing  ='/share/home/dq013/zhwei/colm/data/CoLM_Forcing/JRA3Q/'
+   DEF_dir_forcing  ='/shr03/CoLM_Forcing/JRA3Q/'
 
    DEF_forcing%dataset           = 'JRA3Q'
    DEF_forcing%solarin_all_band  = .true.
