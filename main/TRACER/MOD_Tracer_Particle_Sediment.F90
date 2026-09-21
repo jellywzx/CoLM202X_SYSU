@@ -1017,7 +1017,9 @@ CONTAINS
                      d_eff_val = exch_d_eff(ised,i) + exch_d_adv_step(ised,i)
 
 #ifdef CoLMDEBUG
-                     IF (sedcon(ised,i) > max_sedcon_local) THEN
+                     IF (sedcon(ised,i) > max_sedcon_local .or. &
+                         (sedcon(ised,i) == max_sedcon_local .and. sedcon(ised,i) > 0._r8 .and. &
+                          (extreme_meta_local(1,1) == 0 .or. ucat_ucid(i) < extreme_meta_local(1,1)))) THEN
                         max_sedcon_local = sedcon(ised,i)
                         extreme_meta_local(1,:) = (/ ucat_ucid(i), x_ucat(i), y_ucat(i), ised /)
                         IF (sed_acc_time(i) > 0._r8) THEN
@@ -1039,7 +1041,9 @@ CONTAINS
                         extreme_sedinp_local(:,1) = sedinp(:,i)
                         extreme_netflw_local(:,1) = netflw(:,i) + netflw_adv_step(:,i)
                      ENDIF
-                     IF (abs(sedout_val) > max_sedout_local) THEN
+                     IF (abs(sedout_val) > max_sedout_local .or. &
+                         (abs(sedout_val) == max_sedout_local .and. abs(sedout_val) > 0._r8 .and. &
+                          (extreme_meta_local(2,1) == 0 .or. ucat_ucid(i) < extreme_meta_local(2,1)))) THEN
                         max_sedout_local = abs(sedout_val)
                         extreme_meta_local(2,:) = (/ ucat_ucid(i), x_ucat(i), y_ucat(i), ised /)
                         IF (sed_acc_time(i) > 0._r8) THEN
