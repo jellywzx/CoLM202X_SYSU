@@ -584,7 +584,7 @@ CONTAINS
    ! Main sediment calculation. Called from MOD_Grid_RiverLakeFlow after water routing.
    !-------------------------------------------------------------------------------------
    USE MOD_Grid_RiverLakeNetwork, only: numucat, topo_rivwth, topo_rivlen, &
-      topo_rivman, topo_area, ucat_next
+      topo_rivman, topo_area, ucat_next, ucat_ucid, x_ucat, y_ucat, griducat
    USE MOD_Const_Physical, only: grav
    IMPLICIT NONE
 
@@ -628,6 +628,16 @@ CONTAINS
    integer  :: n_flow_cancel_local, n_period_near_dry_local
    integer  :: diag_count_global(12), carrier_filter_count_global(1)
    logical  :: invalid_sediment_found
+   integer  :: extreme_meta_local(2,4), extreme_meta_global(2,4)
+   integer  :: extreme_cell_global(2), iextreme
+   real(r8) :: extreme_state_local(2,10), extreme_state_global(2,10)
+   real(r8), allocatable :: extreme_sedcon_local(:,:), extreme_sedcon_global(:,:)
+   real(r8), allocatable :: extreme_sedout_local(:,:), extreme_sedout_global(:,:)
+   real(r8), allocatable :: extreme_sedinp_local(:,:), extreme_sedinp_global(:,:)
+   real(r8), allocatable :: extreme_netflw_local(:,:), extreme_netflw_global(:,:)
+   real(r8) :: extreme_lon, extreme_lat, extreme_trigger_value
+   real(r8) :: sedcon_total_diag, sedout_total_diag, sedout_abs_total_diag
+   real(r8) :: ssc_mg_l_diag, ssl_t_day_diag, ssl_abs_t_day_diag
    real(r8), parameter :: CFL_RIVOUT_EPS = 1.e-12_r8
 
       IF (.not. sediment_particle_enabled()) RETURN
@@ -641,6 +651,12 @@ CONTAINS
       allocate(wet_seen(numucat), shallow_seen(numucat), source_seen(numucat))
       allocate(susp_seen(numucat), bed_seen(numucat), exch_pos_seen(numucat), exch_neg_seen(numucat))
       allocate(es_raw_seen(numucat), d_raw_seen(numucat), es_eff_seen(numucat), d_eff_seen(numucat))
+#ifdef CoLMDEBUG
+      allocate(extreme_sedcon_local(nsed,2), extreme_sedcon_global(nsed,2))
+      allocate(extreme_sedout_local(nsed,2), extreme_sedout_global(nsed,2))
+      allocate(extreme_sedinp_local(nsed,2), extreme_sedinp_global(nsed,2))
+      allocate(extreme_netflw_local(nsed,2), extreme_netflw_global(nsed,2))
+#endif
 
       ! Compute flooded fraction from current routing period accumulators only,
       ! not from history-period averages.  This preserves the flood-exposure
@@ -712,6 +728,19 @@ CONTAINS
       max_d_raw_local = 0._r8
       max_es_eff_local = 0._r8
       max_d_eff_local = 0._r8
+      extreme_meta_local = 0
+      extreme_meta_global = 0
+      extreme_cell_global = huge(1)
+      extreme_state_local = 0._r8
+      extreme_state_global = 0._r8
+      extreme_sedcon_local = 0._r8
+      extreme_sedcon_global = 0._r8
+      extreme_sedout_local = 0._r8
+      extreme_sedout_global = 0._r8
+      extreme_sedinp_local = 0._r8
+      extreme_sedinp_global = 0._r8
+      extreme_netflw_local = 0._r8
+      extreme_netflw_global = 0._r8
       IF (numucat > 0) THEN
          max_sed_precip_local = maxval(sed_precip)
          max_precip_rate_local = max_sed_precip_local / max(precip_time_local, 1.e-20_r8)
@@ -987,8 +1016,55 @@ CONTAINS
                      netflw_val = netflw(ised,i) + netflw_adv_step(ised,i)
                      d_eff_val = exch_d_eff(ised,i) + exch_d_adv_step(ised,i)
 
+#ifdef CoLMDEBUG
+                     IF (sedcon(ised,i) > max_sedcon_local) THEN
+                        max_sedcon_local = sedcon(ised,i)
+                        extreme_meta_local(1,:) = (/ ucat_ucid(i), x_ucat(i), y_ucat(i), ised /)
+                        IF (sed_acc_time(i) > 0._r8) THEN
+                           extreme_state_local(1,1) = sed_acc_wdsrf(i) / sed_acc_time(i)
+                           extreme_state_local(1,2) = sed_acc_wdsrf_min(i)
+                           extreme_state_local(1,3) = sed_acc_wdsrf_max(i)
+                        ELSE
+                           extreme_state_local(1,1:3) = 0._r8
+                        ENDIF
+                        extreme_state_local(1,4) = rivsto(i)
+                        extreme_state_local(1,5) = rivout(i)
+                        extreme_state_local(1,6) = rivout_abs(i)
+                        extreme_state_local(1,7) = sed_acc_rivout_min(i)
+                        extreme_state_local(1,8) = sed_acc_rivout_max(i)
+                        extreme_state_local(1,9) = shearvel(i)
+                        extreme_state_local(1,10) = bed_area(i)
+                        extreme_sedcon_local(:,1) = sedcon(:,i)
+                        extreme_sedout_local(:,1) = sedout(:,i)
+                        extreme_sedinp_local(:,1) = sedinp(:,i)
+                        extreme_netflw_local(:,1) = netflw(:,i) + netflw_adv_step(:,i)
+                     ENDIF
+                     IF (abs(sedout_val) > max_sedout_local) THEN
+                        max_sedout_local = abs(sedout_val)
+                        extreme_meta_local(2,:) = (/ ucat_ucid(i), x_ucat(i), y_ucat(i), ised /)
+                        IF (sed_acc_time(i) > 0._r8) THEN
+                           extreme_state_local(2,1) = sed_acc_wdsrf(i) / sed_acc_time(i)
+                           extreme_state_local(2,2) = sed_acc_wdsrf_min(i)
+                           extreme_state_local(2,3) = sed_acc_wdsrf_max(i)
+                        ELSE
+                           extreme_state_local(2,1:3) = 0._r8
+                        ENDIF
+                        extreme_state_local(2,4) = rivsto(i)
+                        extreme_state_local(2,5) = rivout(i)
+                        extreme_state_local(2,6) = rivout_abs(i)
+                        extreme_state_local(2,7) = sed_acc_rivout_min(i)
+                        extreme_state_local(2,8) = sed_acc_rivout_max(i)
+                        extreme_state_local(2,9) = shearvel(i)
+                        extreme_state_local(2,10) = bed_area(i)
+                        extreme_sedcon_local(:,2) = sedcon(:,i)
+                        extreme_sedout_local(:,2) = sedout(:,i)
+                        extreme_sedinp_local(:,2) = sedinp(:,i)
+                        extreme_netflw_local(:,2) = netflw(:,i) + netflw_adv_step(:,i)
+                     ENDIF
+#else
                      max_sedcon_local = max(max_sedcon_local, sedcon(ised,i))
                      max_sedout_local = max(max_sedout_local, abs(sedout_val))
+#endif
                      max_bedout_local = max(max_bedout_local, abs(bedout_val))
                      max_sedinp_local = max(max_sedinp_local, sedinp(ised,i))
                      max_netflw_local = max(max_netflw_local, abs(netflw_val))
@@ -1150,6 +1226,50 @@ CONTAINS
 #ifdef USEMPI
       CALL mpi_allreduce(MPI_IN_PLACE, diag_max_global, size(diag_max_global), &
          MPI_REAL8, MPI_MAX, p_comm_worker, p_err)
+#endif
+
+      ! Select one deterministic owner for each global extreme. If the same
+      ! maximum occurs in multiple cells, use the smallest global ucat ID.
+      extreme_cell_global = huge(1)
+      IF (extreme_meta_local(1,1) > 0 .and. max_sedcon_local == diag_max_global(1)) &
+         extreme_cell_global(1) = extreme_meta_local(1,1)
+      IF (extreme_meta_local(2,1) > 0 .and. max_sedout_local == diag_max_global(2)) &
+         extreme_cell_global(2) = extreme_meta_local(2,1)
+#ifdef USEMPI
+      CALL mpi_allreduce(MPI_IN_PLACE, extreme_cell_global, size(extreme_cell_global), &
+         MPI_INTEGER, MPI_MIN, p_comm_worker, p_err)
+#endif
+
+      DO iextreme = 1, 2
+         IF (extreme_meta_local(iextreme,1) /= extreme_cell_global(iextreme)) THEN
+            extreme_meta_local(iextreme,:) = 0
+            extreme_state_local(iextreme,:) = 0._r8
+            extreme_sedcon_local(:,iextreme) = 0._r8
+            extreme_sedout_local(:,iextreme) = 0._r8
+            extreme_sedinp_local(:,iextreme) = 0._r8
+            extreme_netflw_local(:,iextreme) = 0._r8
+         ENDIF
+      ENDDO
+
+      extreme_meta_global = extreme_meta_local
+      extreme_state_global = extreme_state_local
+      extreme_sedcon_global = extreme_sedcon_local
+      extreme_sedout_global = extreme_sedout_local
+      extreme_sedinp_global = extreme_sedinp_local
+      extreme_netflw_global = extreme_netflw_local
+#ifdef USEMPI
+      CALL mpi_allreduce(MPI_IN_PLACE, extreme_meta_global, size(extreme_meta_global), &
+         MPI_INTEGER, MPI_SUM, p_comm_worker, p_err)
+      CALL mpi_allreduce(MPI_IN_PLACE, extreme_state_global, size(extreme_state_global), &
+         MPI_REAL8, MPI_SUM, p_comm_worker, p_err)
+      CALL mpi_allreduce(MPI_IN_PLACE, extreme_sedcon_global, size(extreme_sedcon_global), &
+         MPI_REAL8, MPI_SUM, p_comm_worker, p_err)
+      CALL mpi_allreduce(MPI_IN_PLACE, extreme_sedout_global, size(extreme_sedout_global), &
+         MPI_REAL8, MPI_SUM, p_comm_worker, p_err)
+      CALL mpi_allreduce(MPI_IN_PLACE, extreme_sedinp_global, size(extreme_sedinp_global), &
+         MPI_REAL8, MPI_SUM, p_comm_worker, p_err)
+      CALL mpi_allreduce(MPI_IN_PLACE, extreme_netflw_global, size(extreme_netflw_global), &
+         MPI_REAL8, MPI_SUM, p_comm_worker, p_err)
       CALL mpi_allreduce(MPI_IN_PLACE, diag_sum_global, size(diag_sum_global), &
          MPI_REAL8, MPI_SUM, p_comm_worker, p_err)
       CALL mpi_allreduce(MPI_IN_PLACE, diag_count_global, size(diag_count_global), &
@@ -1201,9 +1321,78 @@ CONTAINS
             ', exch_pos=', diag_count_global(6), ', exch_neg=', diag_count_global(7)
          WRITE(*,'(A,I9,A,I9,A,I9,A,I9)') 'Sediment exchange counts raw: Es=', diag_count_global(8), &
             ', D=', diag_count_global(9), ', eff_Es=', diag_count_global(10), ', eff_D=', diag_count_global(11)
+
+         DO iextreme = 1, 2
+            IF (extreme_meta_global(iextreme,1) <= 0) CYCLE
+            extreme_lon = -180._r8 + (real(extreme_meta_global(iextreme,2),r8) - 0.5_r8) &
+               * 360._r8 / real(griducat%nlon,r8)
+            extreme_lat = 90._r8 - (real(extreme_meta_global(iextreme,3),r8) - 0.5_r8) &
+               * 180._r8 / real(griducat%nlat,r8)
+            sedcon_total_diag = sum(extreme_sedcon_global(:,iextreme))
+            sedout_total_diag = sum(extreme_sedout_global(:,iextreme))
+            sedout_abs_total_diag = sum(abs(extreme_sedout_global(:,iextreme)))
+            ssc_mg_l_diag = sedcon_total_diag * psedD * 1.e6_r8
+            ssl_t_day_diag = sedout_total_diag * psedD * 86400._r8
+            ssl_abs_t_day_diag = sedout_abs_total_diag * psedD * 86400._r8
+
+            IF (iextreme == 1) THEN
+               extreme_trigger_value = diag_max_global(1)
+               WRITE(*,'(A)') 'Sediment extreme MAX_SEDCON:'
+               WRITE(*,'(A,ES12.4,A,I0)') '  trigger_value[m3/m3]=', extreme_trigger_value, &
+                  ', trigger_class=', extreme_meta_global(iextreme,4)
+            ELSE
+               extreme_trigger_value = diag_max_global(2)
+               WRITE(*,'(A)') 'Sediment extreme MAX_SEDOUT:'
+               WRITE(*,'(A,ES12.4,A,I0)') '  trigger_value[m3/s]=', extreme_trigger_value, &
+                  ', trigger_class=', extreme_meta_global(iextreme,4)
+            ENDIF
+            WRITE(*,'(A,I0,A,I0,A,I0,A,F11.5,A,F10.5)') &
+               '  ucat=', extreme_meta_global(iextreme,1), &
+               ', x=', extreme_meta_global(iextreme,2), ', y=', extreme_meta_global(iextreme,3), &
+               ', lon=', extreme_lon, ', lat=', extreme_lat
+            WRITE(*,'(A,3(ES12.4,A))') '  depth avg/min/max [m]=', &
+               extreme_state_global(iextreme,1), ' ', extreme_state_global(iextreme,2), ' ', &
+               extreme_state_global(iextreme,3), ''
+            WRITE(*,'(A,3(ES12.4,A))') '  rivsto[m3], rivout[m3/s], abs_rivout[m3/s]=', &
+               extreme_state_global(iextreme,4), ' ', extreme_state_global(iextreme,5), ' ', &
+               extreme_state_global(iextreme,6), ''
+            WRITE(*,'(A,4(ES12.4,A))') '  rivout_min/max[m3/s], shearvel[m/s], bed_area[m2]=', &
+               extreme_state_global(iextreme,7), ' ', extreme_state_global(iextreme,8), ' ', &
+               extreme_state_global(iextreme,9), ' ', extreme_state_global(iextreme,10), ''
+            WRITE(*,'(A)',advance='no') '  sedcon_by_class[m3/m3]='
+            DO ised = 1, nsed
+               WRITE(*,'(1X,ES12.4)',advance='no') extreme_sedcon_global(ised,iextreme)
+            ENDDO
+            WRITE(*,*)
+            WRITE(*,'(A)',advance='no') '  sedout_by_class[m3/s]='
+            DO ised = 1, nsed
+               WRITE(*,'(1X,ES12.4)',advance='no') extreme_sedout_global(ised,iextreme)
+            ENDDO
+            WRITE(*,*)
+            WRITE(*,'(A)',advance='no') '  sedinp_by_class[m3/s]='
+            DO ised = 1, nsed
+               WRITE(*,'(1X,ES12.4)',advance='no') extreme_sedinp_global(ised,iextreme)
+            ENDDO
+            WRITE(*,*)
+            WRITE(*,'(A)',advance='no') '  netflw_by_class[m3/s]='
+            DO ised = 1, nsed
+               WRITE(*,'(1X,ES12.4)',advance='no') extreme_netflw_global(ised,iextreme)
+            ENDDO
+            WRITE(*,*)
+            WRITE(*,'(A,ES12.4,A,ES12.4)') '  sedcon_total[m3/m3]=', sedcon_total_diag, &
+               ', SSC_total[mg/L]=', ssc_mg_l_diag
+            WRITE(*,'(A,ES12.4,A,ES12.4,A,ES12.4,A,ES12.4)') &
+               '  sedout_total_signed[m3/s]=', sedout_total_diag, &
+               ', sedout_total_abs[m3/s]=', sedout_abs_total_diag, &
+               ', SSL_signed[t/day]=', ssl_t_day_diag, ', SSL_abs[t/day]=', ssl_abs_t_day_diag
+         ENDDO
       ENDIF
 #endif
 
+#ifdef CoLMDEBUG
+      deallocate(extreme_sedcon_local, extreme_sedcon_global, extreme_sedout_local, extreme_sedout_global, &
+         extreme_sedinp_local, extreme_sedinp_global, extreme_netflw_local, extreme_netflw_global)
+#endif
       deallocate(rivsto, rivout, rivout_abs, bed_area, fldfrc, wet_seen, shallow_seen, source_seen, &
          susp_seen, bed_seen, exch_pos_seen, exch_neg_seen, es_raw_seen, &
          d_raw_seen, es_eff_seen, d_eff_seen)
