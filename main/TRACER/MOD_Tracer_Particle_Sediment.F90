@@ -97,6 +97,24 @@ MODULE MOD_Tracer_Particle_Sediment
    ! generate sediment advection CFL constraints.
    real(r8), parameter :: SED_NEAR_DRY_DEPTH = 1.e-4_r8
 
+#ifdef CoLMDEBUG
+   ! Fixed Amazon benchmark stations from the HYBAM reference network.
+   ! Coordinates are decimal degrees (north/east positive).  The routing cell
+   ! match is resolved once at initialization, then reused every routing period.
+   integer, parameter :: SED_N_DIAG_STATIONS = 4
+   character(len=16), parameter :: SED_DIAG_STATION_NAMES(SED_N_DIAG_STATIONS) = (/ &
+      'Serrinha        ', 'Porto Velho     ', 'Manacapuru      ', 'Obidos          ' /)
+   real(r8), parameter :: SED_DIAG_STATION_LAT(SED_N_DIAG_STATIONS) = (/ &
+      -0.4500_r8, -8.7370_r8, -3.3122_r8, -1.9470_r8 /)
+   real(r8), parameter :: SED_DIAG_STATION_LON(SED_N_DIAG_STATIONS) = (/ &
+      -64.8300_r8, -63.9200_r8, -60.6303_r8, -55.5110_r8 /)
+   integer, save :: sed_diag_station_ucid(SED_N_DIAG_STATIONS) = 0
+   integer, allocatable, save :: sed_diag_station_local_i(:)
+   real(r8), save :: sed_diag_station_model_lon(SED_N_DIAG_STATIONS) = 0._r8
+   real(r8), save :: sed_diag_station_model_lat(SED_N_DIAG_STATIONS) = 0._r8
+   real(r8), save :: sed_diag_station_distance_km(SED_N_DIAG_STATIONS) = 0._r8
+#endif
+
    !-------------------------------------------------------------------------------------
    ! Static Data (read from DEF_UnitCatchment_file)
    !-------------------------------------------------------------------------------------
@@ -236,6 +254,105 @@ CONTAINS
 
    END SUBROUTINE register_sediment_tracer_provider
 
+#ifdef CoLMDEBUG
+   !-------------------------------------------------------------------------------------
+   SUBROUTINE initialize_sediment_diag_stations()
+   ! Resolve each fixed HYBAM station to one deterministic nearest routing unit.
+   !-------------------------------------------------------------------------------------
+   USE MOD_Grid_RiverLakeNetwork, only: numucat, ucat_ucid, x_ucat, y_ucat, griducat
+   USE MOD_Vars_Global, only: pi
+   IMPLICIT NONE
+
+   integer :: ista, i, best_i, candidate_ucid
+   real(r8) :: cell_lon, cell_lat, dlon, dlat, d2, best_d2, global_d2
+   real(r8) :: model_lon_local, model_lat_local
+   real(r8) :: tie_tol
+
+      IF (.not. p_is_worker) RETURN
+
+      IF (allocated(sed_diag_station_local_i)) deallocate(sed_diag_station_local_i)
+      allocate(sed_diag_station_local_i(SED_N_DIAG_STATIONS))
+      sed_diag_station_local_i = 0
+      sed_diag_station_ucid = 0
+      sed_diag_station_model_lon = 0._r8
+      sed_diag_station_model_lat = 0._r8
+      sed_diag_station_distance_km = 0._r8
+
+      DO ista = 1, SED_N_DIAG_STATIONS
+         best_d2 = huge(1._r8)
+         best_i = 0
+
+         DO i = 1, numucat
+            cell_lon = -180._r8 + (real(x_ucat(i),r8) - 0.5_r8) &
+               * 360._r8 / real(griducat%nlon,r8)
+            cell_lat = 90._r8 - (real(y_ucat(i),r8) - 0.5_r8) &
+               * 180._r8 / real(griducat%nlat,r8)
+            dlon = (cell_lon - SED_DIAG_STATION_LON(ista)) &
+               * cos(SED_DIAG_STATION_LAT(ista) * pi / 180._r8)
+            dlat = cell_lat - SED_DIAG_STATION_LAT(ista)
+            d2 = dlon * dlon + dlat * dlat
+            IF (d2 < best_d2 .or. &
+                (d2 == best_d2 .and. best_i > 0 .and. ucat_ucid(i) < ucat_ucid(best_i))) THEN
+               best_d2 = d2
+               best_i = i
+            ENDIF
+         ENDDO
+
+         global_d2 = best_d2
+#ifdef USEMPI
+         CALL mpi_allreduce(MPI_IN_PLACE, global_d2, 1, MPI_REAL8, MPI_MIN, p_comm_worker, p_err)
+#endif
+
+         candidate_ucid = huge(1)
+         tie_tol = max(1.e-12_r8, 1.e-10_r8 * max(global_d2, 1._r8))
+         IF (best_i > 0 .and. abs(best_d2 - global_d2) <= tie_tol) THEN
+            candidate_ucid = ucat_ucid(best_i)
+         ENDIF
+#ifdef USEMPI
+         CALL mpi_allreduce(MPI_IN_PLACE, candidate_ucid, 1, MPI_INTEGER, MPI_MIN, p_comm_worker, p_err)
+#endif
+         sed_diag_station_ucid(ista) = candidate_ucid
+
+         DO i = 1, numucat
+            IF (ucat_ucid(i) == candidate_ucid) THEN
+               sed_diag_station_local_i(ista) = i
+               EXIT
+            ENDIF
+         ENDDO
+
+         model_lon_local = 0._r8
+         model_lat_local = 0._r8
+         IF (sed_diag_station_local_i(ista) > 0) THEN
+            i = sed_diag_station_local_i(ista)
+            model_lon_local = -180._r8 + (real(x_ucat(i),r8) - 0.5_r8) &
+               * 360._r8 / real(griducat%nlon,r8)
+            model_lat_local = 90._r8 - (real(y_ucat(i),r8) - 0.5_r8) &
+               * 180._r8 / real(griducat%nlat,r8)
+         ENDIF
+#ifdef USEMPI
+         CALL mpi_allreduce(MPI_IN_PLACE, model_lon_local, 1, MPI_REAL8, MPI_SUM, p_comm_worker, p_err)
+         CALL mpi_allreduce(MPI_IN_PLACE, model_lat_local, 1, MPI_REAL8, MPI_SUM, p_comm_worker, p_err)
+#endif
+         sed_diag_station_model_lon(ista) = model_lon_local
+         sed_diag_station_model_lat(ista) = model_lat_local
+         sed_diag_station_distance_km(ista) = sqrt(max(global_d2,0._r8)) * 111.195_r8
+      ENDDO
+
+      IF (p_iam_worker == 0) THEN
+         WRITE(*,'(A)') 'Sediment Amazon benchmark station mapping:'
+         DO ista = 1, SED_N_DIAG_STATIONS
+            WRITE(*,'(2X,A16,A,2(F10.4,1X),A,I0,A,2(F10.4,1X),A,F9.3)') &
+               trim(SED_DIAG_STATION_NAMES(ista)), ' target(lat lon)=', &
+               SED_DIAG_STATION_LAT(ista), SED_DIAG_STATION_LON(ista), &
+               ' ucat=', sed_diag_station_ucid(ista), ' model(lat lon)=', &
+               sed_diag_station_model_lat(ista), sed_diag_station_model_lon(ista), &
+               ' distance_km=', sed_diag_station_distance_km(ista)
+         ENDDO
+      ENDIF
+
+   END SUBROUTINE initialize_sediment_diag_stations
+#endif
+
    !-------------------------------------------------------------------------------------
    SUBROUTINE grid_sediment_init()
    !-------------------------------------------------------------------------------------
@@ -319,6 +436,9 @@ CONTAINS
       CALL read_sediment_static_data(parafile)
       CALL allocate_sediment_vars()
       CALL initialize_sediment_state()
+#ifdef CoLMDEBUG
+      IF (p_is_worker) CALL initialize_sediment_diag_stations()
+#endif
 
       IF (p_is_io) THEN
          WRITE(*,*) 'Sediment module initialized successfully.'
@@ -638,6 +758,15 @@ CONTAINS
    real(r8) :: extreme_lon, extreme_lat, extreme_trigger_value
    real(r8) :: sedcon_total_diag, sedout_total_diag, sedout_abs_total_diag
    real(r8) :: ssc_mg_l_diag, ssl_t_day_diag, ssl_abs_t_day_diag
+#ifdef CoLMDEBUG
+   integer  :: ista, station_i
+   real(r8) :: station_state_local(SED_N_DIAG_STATIONS,4)
+   real(r8) :: station_state_global(SED_N_DIAG_STATIONS,4)
+   real(r8), allocatable :: station_sedcon_local(:,:), station_sedcon_global(:,:)
+   real(r8), allocatable :: station_sedout_local(:,:), station_sedout_global(:,:)
+   real(r8) :: station_sedcon_total, station_sedout_total, station_sedout_abs_total
+   real(r8) :: station_ssc_mg_l, station_ssl_t_day, station_ssl_abs_t_day
+#endif
    real(r8), parameter :: CFL_RIVOUT_EPS = 1.e-12_r8
 
       IF (.not. sediment_particle_enabled()) RETURN
@@ -656,6 +785,10 @@ CONTAINS
       allocate(extreme_sedout_local(nsed,2), extreme_sedout_global(nsed,2))
       allocate(extreme_sedinp_local(nsed,2), extreme_sedinp_global(nsed,2))
       allocate(extreme_netflw_local(nsed,2), extreme_netflw_global(nsed,2))
+      allocate(station_sedcon_local(nsed,SED_N_DIAG_STATIONS))
+      allocate(station_sedcon_global(nsed,SED_N_DIAG_STATIONS))
+      allocate(station_sedout_local(nsed,SED_N_DIAG_STATIONS))
+      allocate(station_sedout_global(nsed,SED_N_DIAG_STATIONS))
 #endif
 
       ! Compute flooded fraction from current routing period accumulators only,
@@ -1227,6 +1360,24 @@ CONTAINS
          sum_period_near_dry_abs_q_local, sum_period_near_dry_signed_q_local /)
       carrier_filter_count_global = (/ n_period_near_dry_local /)
 #ifdef CoLMDEBUG
+      station_state_local = 0._r8
+      station_state_global = 0._r8
+      station_sedcon_local = 0._r8
+      station_sedcon_global = 0._r8
+      station_sedout_local = 0._r8
+      station_sedout_global = 0._r8
+      DO ista = 1, SED_N_DIAG_STATIONS
+         station_i = 0
+         IF (allocated(sed_diag_station_local_i)) station_i = sed_diag_station_local_i(ista)
+         IF (station_i > 0) THEN
+            station_state_local(ista,1) = rivout(station_i)
+            station_state_local(ista,2) = rivout_abs(station_i)
+            station_state_local(ista,3) = rivsto(station_i)
+            station_state_local(ista,4) = shearvel(station_i)
+            station_sedcon_local(:,ista) = sedcon(:,station_i)
+            station_sedout_local(:,ista) = sedout(:,station_i)
+         ENDIF
+      ENDDO
 #ifdef USEMPI
       CALL mpi_allreduce(MPI_IN_PLACE, diag_max_global, size(diag_max_global), &
          MPI_REAL8, MPI_MAX, p_comm_worker, p_err)
@@ -1274,6 +1425,15 @@ CONTAINS
          MPI_REAL8, MPI_SUM, p_comm_worker, p_err)
       CALL mpi_allreduce(MPI_IN_PLACE, extreme_netflw_global, size(extreme_netflw_global), &
          MPI_REAL8, MPI_SUM, p_comm_worker, p_err)
+      station_state_global = station_state_local
+      station_sedcon_global = station_sedcon_local
+      station_sedout_global = station_sedout_local
+      CALL mpi_allreduce(MPI_IN_PLACE, station_state_global, size(station_state_global), &
+         MPI_REAL8, MPI_SUM, p_comm_worker, p_err)
+      CALL mpi_allreduce(MPI_IN_PLACE, station_sedcon_global, size(station_sedcon_global), &
+         MPI_REAL8, MPI_SUM, p_comm_worker, p_err)
+      CALL mpi_allreduce(MPI_IN_PLACE, station_sedout_global, size(station_sedout_global), &
+         MPI_REAL8, MPI_SUM, p_comm_worker, p_err)
       CALL mpi_allreduce(MPI_IN_PLACE, diag_sum_global, size(diag_sum_global), &
          MPI_REAL8, MPI_SUM, p_comm_worker, p_err)
       CALL mpi_allreduce(MPI_IN_PLACE, diag_count_global, size(diag_count_global), &
@@ -1282,6 +1442,10 @@ CONTAINS
          size(carrier_filter_diag_global), MPI_REAL8, MPI_SUM, p_comm_worker, p_err)
       CALL mpi_allreduce(MPI_IN_PLACE, carrier_filter_count_global, &
          size(carrier_filter_count_global), MPI_INTEGER, MPI_SUM, p_comm_worker, p_err)
+#else
+      station_state_global = station_state_local
+      station_sedcon_global = station_sedcon_local
+      station_sedout_global = station_sedout_local
 #endif
 
       ! Diagnostic summary of global sediment state (worker 0 only)
@@ -1390,12 +1554,51 @@ CONTAINS
                ', sedout_total_abs[m3/s]=', sedout_abs_total_diag, &
                ', SSL_signed[t/day]=', ssl_t_day_diag, ', SSL_abs[t/day]=', ssl_abs_t_day_diag
          ENDDO
+
+         WRITE(*,'(A)') 'Sediment Amazon benchmark station diag:'
+         DO ista = 1, SED_N_DIAG_STATIONS
+            station_sedcon_total = sum(station_sedcon_global(:,ista))
+            station_sedout_total = sum(station_sedout_global(:,ista))
+            station_sedout_abs_total = sum(abs(station_sedout_global(:,ista)))
+            station_ssc_mg_l = station_sedcon_total * psedD * 1.e6_r8
+            station_ssl_t_day = station_sedout_total * psedD * 86400._r8
+            station_ssl_abs_t_day = station_sedout_abs_total * psedD * 86400._r8
+
+            WRITE(*,'(2X,A16,A,I0,A,F8.3,A,2(F10.4,1X))') &
+               trim(SED_DIAG_STATION_NAMES(ista)), ' ucat=', sed_diag_station_ucid(ista), &
+               ' match_km=', sed_diag_station_distance_km(ista), ' model(lat lon)=', &
+               sed_diag_station_model_lat(ista), sed_diag_station_model_lon(ista)
+            WRITE(*,'(A,ES12.4,A,ES12.4,A,ES12.4,A,ES12.4)') &
+               '    Q_signed[m3/s]=', station_state_global(ista,1), &
+               ', Q_abs[m3/s]=', station_state_global(ista,2), &
+               ', rivsto[m3]=', station_state_global(ista,3), &
+               ', shearvel[m/s]=', station_state_global(ista,4)
+            WRITE(*,'(A)',advance='no') '    sedcon_by_class[m3/m3]='
+            DO ised = 1, nsed
+               WRITE(*,'(1X,ES12.4)',advance='no') station_sedcon_global(ised,ista)
+            ENDDO
+            WRITE(*,*)
+            WRITE(*,'(A)',advance='no') '    sedout_by_class[m3/s]='
+            DO ised = 1, nsed
+               WRITE(*,'(1X,ES12.4)',advance='no') station_sedout_global(ised,ista)
+            ENDDO
+            WRITE(*,*)
+            WRITE(*,'(A,ES12.4,A,ES12.4,A,ES12.4)') &
+               '    sedcon_total[m3/m3]=', station_sedcon_total, &
+               ', SSC_total[mg/L]=', station_ssc_mg_l, &
+               ', sedout_total[m3/s]=', station_sedout_total
+            WRITE(*,'(A,ES12.4,A,ES12.4,A,ES12.4)') &
+               '    sedout_abs_total[m3/s]=', station_sedout_abs_total, &
+               ', SSL_signed[t/day]=', station_ssl_t_day, &
+               ', SSL_abs[t/day]=', station_ssl_abs_t_day
+         ENDDO
       ENDIF
 #endif
 
 #ifdef CoLMDEBUG
       deallocate(extreme_sedcon_local, extreme_sedcon_global, extreme_sedout_local, extreme_sedout_global, &
-         extreme_sedinp_local, extreme_sedinp_global, extreme_netflw_local, extreme_netflw_global)
+         extreme_sedinp_local, extreme_sedinp_global, extreme_netflw_local, extreme_netflw_global, &
+         station_sedcon_local, station_sedcon_global, station_sedout_local, station_sedout_global)
 #endif
       deallocate(rivsto, rivout, rivout_abs, bed_area, fldfrc, wet_seen, shallow_seen, source_seen, &
          susp_seen, bed_seen, exch_pos_seen, exch_neg_seen, es_raw_seen, &
@@ -3733,6 +3936,9 @@ CONTAINS
       IF (allocated(a_netflw     )) deallocate(a_netflw     )
       IF (allocated(a_layer      )) deallocate(a_layer      )
       IF (allocated(a_shearvel   )) deallocate(a_shearvel   )
+#ifdef CoLMDEBUG
+      IF (allocated(sed_diag_station_local_i)) deallocate(sed_diag_station_local_i)
+#endif
    END SUBROUTINE grid_sediment_final
 
 END MODULE MOD_Tracer_Particle_Sediment
