@@ -293,10 +293,14 @@ CONTAINS
                * cos(SED_DIAG_STATION_LAT(ista) * pi / 180._r8)
             dlat = cell_lat - SED_DIAG_STATION_LAT(ista)
             d2 = dlon * dlon + dlat * dlat
-            IF (d2 < best_d2 .or. &
-                (d2 == best_d2 .and. best_i > 0 .and. ucat_ucid(i) < ucat_ucid(best_i))) THEN
+            IF (d2 < best_d2) THEN
                best_d2 = d2
                best_i = i
+            ELSE IF (d2 == best_d2 .and. best_i > 0) THEN
+               IF (ucat_ucid(i) < ucat_ucid(best_i)) THEN
+                  best_d2 = d2
+                  best_i = i
+               ENDIF
             ENDIF
          ENDDO
 
@@ -793,6 +797,10 @@ CONTAINS
 
       IF (.not. sediment_particle_enabled()) RETURN
       IF (.not. p_is_worker) RETURN
+
+#ifdef CoLMDEBUG
+      CALL system_clock(clk_total_start, clk_rate)
+#endif
 
       allocate(rivsto(numucat))
       allocate(rivout(numucat))
@@ -2344,6 +2352,7 @@ CONTAINS
 
    integer  :: i, ised
    real(r8) :: plusVel, minusVel, layer_sum, sedsto_sum
+   real(r8) :: sedsto_neg_tol, layer_neg_tol
       real(r8) :: dTmp(nsed)
 
       IF (.not. p_is_worker) RETURN
@@ -2481,7 +2490,15 @@ CONTAINS
       DO i = 1, numucat
          DO ised = 1, nsed
 
-            IF (sedsto(ised,i) < 0._r8 .or. layer(ised,i) < 0._r8) THEN
+            sedsto_neg_tol = SED_BALANCE_ABS_TOL + SED_BALANCE_REL_TOL * &
+               max(1._r8, abs(sedsto(ised,i)), abs(sedout(ised,i) * dt), &
+               abs(sed_ups(ised,i) * dt))
+            layer_neg_tol = SED_BALANCE_ABS_TOL + SED_BALANCE_REL_TOL * &
+               max(1._r8, abs(layer(ised,i)), &
+               abs(bedout(ised,i) * dt / (1._r8 - lambda)), &
+               abs(bed_ups(ised,i) * dt / (1._r8 - lambda)))
+            IF (sedsto(ised,i) < -sedsto_neg_tol .or. &
+                layer(ised,i) < -layer_neg_tol) THEN
                WRITE(*,'(A)') '========== SEDIMENT_NEGATIVE_STORAGE =========='
                WRITE(*,'(A,I0)')       'worker          = ', p_iam_worker
                WRITE(*,'(A,I0)')       'cell i          = ', i
