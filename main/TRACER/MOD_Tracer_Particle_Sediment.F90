@@ -864,85 +864,10 @@ CONTAINS
       d_eff_seen = .false.
 
 #ifdef CoLMDEBUG
-
-      CALL system_clock(clk_total_end, clk_rate)
-
-      IF (clk_rate > 0) THEN
-         t_total = real(clk_total_end - clk_total_start, r8) / real(clk_rate, r8)
-      ELSE
-         t_total = -1._r8
-      ENDIF
-
-      ! ---------------------------------------------------------------
-      ! timing_local:
-      ! 1 total
-      ! 2 yield
-      ! 3 advection
-      ! 4 input
-      ! 5 exchange
-      ! 6 layer redistribution
-      ! 7 diagnostics
-      ! 8 other/uninstrumented
-      ! ---------------------------------------------------------------
-
-      timing_local(1) = t_total
-      timing_local(2) = t_yield
-      timing_local(3) = t_adv
-      timing_local(4) = t_input
-      timing_local(5) = t_exchange
-      timing_local(6) = t_layer
-      timing_local(7) = t_diag
-
-      timing_local(8) = t_total - &
-         (t_yield + t_adv + t_input + t_exchange + t_layer + t_diag)
-
-      timing_min = timing_local
-      timing_max = timing_local
-      timing_sum = timing_local
-
-#ifdef USEMPI
-      CALL mpi_allreduce(MPI_IN_PLACE, timing_min, size(timing_min), &
-         MPI_REAL8, MPI_MIN, p_comm_worker, p_err)
-
-      CALL mpi_allreduce(MPI_IN_PLACE, timing_max, size(timing_max), &
-         MPI_REAL8, MPI_MAX, p_comm_worker, p_err)
-
-      CALL mpi_allreduce(MPI_IN_PLACE, timing_sum, size(timing_sum), &
-         MPI_REAL8, MPI_SUM, p_comm_worker, p_err)
-#endif
-
-      timing_mean = timing_sum / real(p_np_worker, r8)
-
-      IF (p_iam_worker == 0) THEN
-
-         WRITE(*,'(A,I0,A,I0,A,I0,A,F12.3)') &
-            'SED_PERF substeps: morph=', iter_sed, &
-            ', adv=', iter_adv, &
-            ', workers=', p_np_worker, &
-            ', routing_dt=', deltime
-
-         WRITE(*,'(A,3F12.3)') &
-            'SED_PERF total  min/mean/max [s] = ', &
-            timing_min(1), timing_mean(1), timing_max(1)
-
-         WRITE(*,'(A,3F12.3)') &
-            'SED_PERF adv    min/mean/max [s] = ', &
-            timing_min(3), timing_mean(3), timing_max(3)
-
-         WRITE(*,'(A,3F12.3)') &
-            'SED_PERF exch   min/mean/max [s] = ', &
-            timing_min(5), timing_mean(5), timing_max(5)
-
-         WRITE(*,'(A,3F12.3)') &
-            'SED_PERF diag   min/mean/max [s] = ', &
-            timing_min(7), timing_mean(7), timing_max(7)
-
-         WRITE(*,'(A,3F12.3)') &
-            'SED_PERF other  min/mean/max [s] = ', &
-            timing_min(8), timing_mean(8), timing_max(8)
-
-      ENDIF
-
+      ! Start the wall-clock timer before any sediment-period diagnostics or
+      ! sediment operators.  The corresponding stop and MPI aggregation are
+      ! performed only after the full sediment calculation has completed.
+      CALL system_clock(clk_total_start, clk_rate)
 #endif
 
       ! Store precipitation averaging time before reset
@@ -1383,18 +1308,78 @@ CONTAINS
       sed_precip_time      = 0._r8
 
 #ifdef CoLMDEBUG
-      CALL system_clock(clk_total_end, clk_rate)
+      ! Stop timing only after the complete sediment calculation for this
+      ! routing period has finished.  Aggregate worker timings here so
+      ! SED_PERF reports actual min/mean/max costs rather than pre-compute zeros.
+      CALL system_clock(clk_total_end)
+      IF (clk_rate > 0) THEN
+         t_total = real(clk_total_end - clk_total_start, r8) / real(clk_rate, r8)
+      ELSE
+         t_total = -1._r8
+      ENDIF
+
+      ! timing_local:
+      ! 1 total
+      ! 2 yield
+      ! 3 advection
+      ! 4 input
+      ! 5 exchange
+      ! 6 layer redistribution
+      ! 7 diagnostics
+      ! 8 other/uninstrumented
+      timing_local(1) = t_total
+      timing_local(2) = t_yield
+      timing_local(3) = t_adv
+      timing_local(4) = t_input
+      timing_local(5) = t_exchange
+      timing_local(6) = t_layer
+      timing_local(7) = t_diag
+      timing_local(8) = t_total - &
+         (t_yield + t_adv + t_input + t_exchange + t_layer + t_diag)
+
+      timing_min = timing_local
+      timing_max = timing_local
+      timing_sum = timing_local
+
+#ifdef USEMPI
+      CALL mpi_allreduce(MPI_IN_PLACE, timing_min, size(timing_min), &
+         MPI_REAL8, MPI_MIN, p_comm_worker, p_err)
+      CALL mpi_allreduce(MPI_IN_PLACE, timing_max, size(timing_max), &
+         MPI_REAL8, MPI_MAX, p_comm_worker, p_err)
+      CALL mpi_allreduce(MPI_IN_PLACE, timing_sum, size(timing_sum), &
+         MPI_REAL8, MPI_SUM, p_comm_worker, p_err)
+#endif
+
+      timing_mean = timing_sum / real(p_np_worker, r8)
+
       IF (p_iam_worker == 0) THEN
-         IF (clk_rate > 0) THEN
-            t_total = real(clk_total_end - clk_total_start, r8) / real(clk_rate, r8)
-         ELSE
-            t_total = -1._r8
-         ENDIF
+         ! Keep the legacy timing lines for backward-compatible log parsing.
          WRITE(*,'(A,I6,A,I6,A,F12.3,A,F12.3,A)') 'Sediment timing: morph_substeps=', iter_sed, &
             ', adv_substeps=', iter_adv, ', total=', t_total, ' s, routing_dt=', deltime, ' s'
          WRITE(*,'(A,6(F10.3,A))') 'Sediment timing detail [s]: yield=', t_yield, &
             ', adv=', t_adv, ', input=', t_input, ', exch=', t_exchange, &
             ', layer=', t_layer, ', diag=', t_diag
+
+         WRITE(*,'(A,I0,A,I0,A,I0,A,F12.3)') &
+            'SED_PERF substeps: morph=', iter_sed, &
+            ', adv=', iter_adv, &
+            ', workers=', p_np_worker, &
+            ', routing_dt=', deltime
+         WRITE(*,'(A,3F12.3)') &
+            'SED_PERF total  min/mean/max [s] = ', &
+            timing_min(1), timing_mean(1), timing_max(1)
+         WRITE(*,'(A,3F12.3)') &
+            'SED_PERF adv    min/mean/max [s] = ', &
+            timing_min(3), timing_mean(3), timing_max(3)
+         WRITE(*,'(A,3F12.3)') &
+            'SED_PERF exch   min/mean/max [s] = ', &
+            timing_min(5), timing_mean(5), timing_max(5)
+         WRITE(*,'(A,3F12.3)') &
+            'SED_PERF diag   min/mean/max [s] = ', &
+            timing_min(7), timing_mean(7), timing_max(7)
+         WRITE(*,'(A,3F12.3)') &
+            'SED_PERF other  min/mean/max [s] = ', &
+            timing_min(8), timing_mean(8), timing_max(8)
       ENDIF
 #endif
 
