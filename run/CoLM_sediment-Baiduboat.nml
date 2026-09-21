@@ -1,0 +1,161 @@
+&nl_colm
+
+   ! ===================================================================
+   ! Amazon sediment tuning experiment
+   !
+   ! Sediment physical/tuning parameters are defined separately in:
+   ! ===================================================================
+   ! -------------------------------------------------------------------
+   ! 1. Case
+   ! -------------------------------------------------------------------
+
+   DEF_CASE_NAME = 'Amazon_sediment_0p25'
+   ! -------------------------------------------------------------------
+   ! 2. Domain
+   ! -------------------------------------------------------------------
+
+   DEF_domain%edges =  -22.0
+   DEF_domain%edgen =   12.0
+   DEF_domain%edgew =  -81.0
+   DEF_domain%edgee =  -35.0
+
+
+   ! -------------------------------------------------------------------
+   ! 3. Simulation time
+   ! -------------------------------------------------------------------
+
+   DEF_simulation_time%greenwich    = .TRUE.
+
+   DEF_simulation_time%start_year   = 2001
+   DEF_simulation_time%start_month  = 1
+   DEF_simulation_time%start_day    = 1
+   DEF_simulation_time%start_sec    = 0
+
+   DEF_simulation_time%end_year     = 2001
+   DEF_simulation_time%end_month    = 12
+   DEF_simulation_time%end_day      = 31
+   DEF_simulation_time%end_sec      = 86400
+
+   DEF_simulation_time%spinup_year   = 2001
+   DEF_simulation_time%spinup_month  = 1
+   DEF_simulation_time%spinup_day    = 1
+   DEF_simulation_time%spinup_sec    = 0
+   DEF_simulation_time%spinup_repeat = 0
+
+   DEF_simulation_time%timestep = 1800.
+
+
+   ! -------------------------------------------------------------------
+   ! 4. Directories
+   ! -------------------------------------------------------------------
+
+   DEF_dir_rawdata = '/share/home/dq013/zhwei/colm/data/CoLMrawdata/'
+
+   DEF_dir_runtime = '/share/home/dq013/zhwei/colm/data/CoLMruntime/'
+
+   DEF_dir_output  = '/share/home/dq134/wzx/CoLM/cases/'
+
+
+   ! -------------------------------------------------------------------
+   ! 5. Model grid
+   ! -------------------------------------------------------------------
+
+   DEF_GRIDBASED_lon_res = 0.25
+   DEF_GRIDBASED_lat_res = 0.25
+
+
+   ! -------------------------------------------------------------------
+   ! 6. Initial soil state
+   ! -------------------------------------------------------------------
+
+   DEF_USE_SoilInit = .true.
+
+   DEF_file_SoilInit = '/share/home/dq013/zhwei/colm/data/CoLMruntime/soilstate.nc'
+
+
+   ! -------------------------------------------------------------------
+   ! 7. Land model settings
+   ! -------------------------------------------------------------------
+
+   DEF_LAI_MONTHLY = .true.
+   DEF_LAI_CHANGE_YEARLY = .false.
+
+   DEF_USE_PLANTHYDRAULICS = .false.
+
+   DEF_USE_VariablySaturatedFlow = .true.
+
+   DEF_Runoff_SCHEME = 3
+
+   DEF_USE_Dynamic_Lake = .true.
+
+
+   ! -------------------------------------------------------------------
+   ! 8. River routing
+   ! -------------------------------------------------------------------
+
+   DEF_UnitCatchment_file = '/share/home/dq013/zhwei/colm/data/CoLMruntime/unitcatchment/grid_routing_data_15min_sed.nc'
+
+   DEF_GRIDBASED_ROUTING_MAX_DT = 3600.
+
+
+   ! -------------------------------------------------------------------
+   ! 9. Sediment tracer
+   ! -------------------------------------------------------------------
+
+   DEF_TRACER_NUM = 1
+
+   DEF_TRACER_NAMES = 'SEDIMENT'
+
+   DEF_TRACER_TYPES = 'particle'
+
+   DEF_TRACER_USE_FRACTIONATION = .false.
+
+   ! Use an independent parameter file for tuning instead of modifying
+   ! standard_sediment_parameter.nml directly.
+   DEF_TRACER_PARAM_FILES = 'SEDIMENT:/share/home/dq134/wzx/CoLM/CoLM_0914/run/standard_sediment_parameter.nml'
+
+
+   ! -------------------------------------------------------------------
+   ! 10. Atmospheric forcing
+   ! -------------------------------------------------------------------
+
+   DEF_forcing_namelist = '/share/home/dq134/wzx/CoLM/CoLM_0914/run/forcing/JRA3Q.nml'
+
+
+   ! -------------------------------------------------------------------
+   ! 11. History / restart output
+   ! -------------------------------------------------------------------
+
+   DEF_HIST_lon_res = 0.25
+   DEF_HIST_lat_res = 0.25
+
+   ! Restart does not need to be daily.
+   DEF_WRST_FREQ = 'MONTHLY'
+
+   ! Daily output is recommended for Q / SSC / sediment-load calibration.
+   DEF_HIST_FREQ = 'DAILY'
+
+   ! Put daily records into monthly files.
+   DEF_HIST_groupby = 'MONTH'
+
+   ! Single history file rather than IO shards.
+   DEF_HIST_mode = 'one'
+
+   DEF_REST_CompressLevel = 1
+   DEF_HIST_CompressLevel = 1
+
+   DEF_HIST_WriteBack = .false.
+
+
+   ! -------------------------------------------------------------------
+   ! 12. Selective history output
+   ! -------------------------------------------------------------------
+
+   ! First switch OFF every history variable.
+   DEF_HIST_vars_out_default = .false.
+
+   ! Then selectively enable variables in a separate history namelist.
+   DEF_HIST_vars_namelist = '/share/home/dq134/wzx/CoLM/CoLM_0914/run/history_sediment.nml'
+
+
+/

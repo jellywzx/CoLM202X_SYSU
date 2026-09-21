@@ -1839,7 +1839,7 @@ CONTAINS
 
 ! -----END Macros&Namelist conflicts and dependency management -----
 ! ===============================================================
-
+      CALL print_compile_configuration()
 
       ENDIF
 
@@ -2218,6 +2218,245 @@ CONTAINS
       CALL sync_hist_vars (set_defaults = .false.)
 
    END SUBROUTINE read_namelist
+
+
+   SUBROUTINE print_compile_configuration()
+   !-----------------------------------------------------------------------
+   ! Print the final compile-time configuration determined by define.h.
+   ! This routine is called only by the master process after namelist
+   ! dependency/conflict management has completed.
+   !-----------------------------------------------------------------------
+   IMPLICIT NONE
+
+      WRITE(*,'(/,A)') '============================================================'
+      WRITE(*,'(A)')   'CoLM COMPILE-TIME CONFIGURATION'
+      WRITE(*,'(A)')   '============================================================'
+
+
+      ! ============================================================
+      ! Spatial structure
+      ! ============================================================
+
+      WRITE(*,'(A)') 'Spatial structure:'
+
+#ifdef GRIDBASED
+      WRITE(*,'(A)') '  GRIDBASED                         : ON'
+#else
+      WRITE(*,'(A)') '  GRIDBASED                         : OFF'
+#endif
+
+#ifdef CATCHMENT
+      WRITE(*,'(A)') '  CATCHMENT                         : ON'
+#else
+      WRITE(*,'(A)') '  CATCHMENT                         : OFF'
+#endif
+
+#ifdef UNSTRUCTURED
+      WRITE(*,'(A)') '  UNSTRUCTURED                      : ON'
+#else
+      WRITE(*,'(A)') '  UNSTRUCTURED                      : OFF'
+#endif
+
+#ifdef SinglePoint
+      WRITE(*,'(A)') '  SinglePoint                       : ON'
+#else
+      WRITE(*,'(A)') '  SinglePoint                       : OFF'
+#endif
+
+
+      ! ============================================================
+      ! Land subgrid
+      ! ============================================================
+
+      WRITE(*,'(/,A)') 'Land subgrid:'
+
+#ifdef LULC_USGS
+      WRITE(*,'(A)') '  LULC_USGS                         : ON'
+#else
+      WRITE(*,'(A)') '  LULC_USGS                         : OFF'
+#endif
+
+#ifdef LULC_IGBP
+      WRITE(*,'(A)') '  LULC_IGBP                         : ON'
+#else
+      WRITE(*,'(A)') '  LULC_IGBP                         : OFF'
+#endif
+
+#ifdef LULC_IGBP_PFT
+      WRITE(*,'(A)') '  LULC_IGBP_PFT                     : ON'
+#else
+      WRITE(*,'(A)') '  LULC_IGBP_PFT                     : OFF'
+#endif
+
+#ifdef LULC_IGBP_PC
+      WRITE(*,'(A)') '  LULC_IGBP_PC                      : ON'
+#else
+      WRITE(*,'(A)') '  LULC_IGBP_PC                      : OFF'
+#endif
+
+#ifdef URBAN_MODEL
+      WRITE(*,'(A)') '  URBAN_MODEL                       : ON'
+#else
+      WRITE(*,'(A)') '  URBAN_MODEL                       : OFF'
+#endif
+
+
+      ! ============================================================
+      ! Debug / parallel
+      ! ============================================================
+
+      WRITE(*,'(/,A)') 'Debug and parallel:'
+
+#ifdef CoLMDEBUG
+      WRITE(*,'(A)') '  CoLMDEBUG                         : ON'
+#else
+      WRITE(*,'(A)') '  CoLMDEBUG                         : OFF'
+#endif
+
+#ifdef RangeCheck
+      WRITE(*,'(A)') '  RangeCheck                        : ON'
+#else
+      WRITE(*,'(A)') '  RangeCheck                        : OFF'
+#endif
+
+#ifdef SrfdataDiag
+      WRITE(*,'(A)') '  SrfdataDiag                       : ON'
+#else
+      WRITE(*,'(A)') '  SrfdataDiag                       : OFF'
+#endif
+
+#ifdef USEMPI
+      WRITE(*,'(A)') '  USEMPI                            : ON'
+#else
+      WRITE(*,'(A)') '  USEMPI                            : OFF'
+#endif
+
+
+      ! ============================================================
+      ! Soil hydrology
+      ! ============================================================
+
+      WRITE(*,'(/,A)') 'Soil hydrology:'
+
+#ifdef Campbell_SOIL_MODEL
+      WRITE(*,'(A)') '  Campbell_SOIL_MODEL               : ON'
+#else
+      WRITE(*,'(A)') '  Campbell_SOIL_MODEL               : OFF'
+#endif
+
+#ifdef vanGenuchten_Mualem_SOIL_MODEL
+      WRITE(*,'(A)') '  vanGenuchten_Mualem_SOIL_MODEL    : ON'
+#else
+      WRITE(*,'(A)') '  vanGenuchten_Mualem_SOIL_MODEL    : OFF'
+#endif
+
+#ifdef CatchLateralFlow
+      WRITE(*,'(A)') '  CatchLateralFlow                  : ON'
+#else
+      WRITE(*,'(A)') '  CatchLateralFlow                  : OFF'
+#endif
+
+
+      ! ============================================================
+      ! River routing
+      ! ============================================================
+
+      WRITE(*,'(/,A)') 'River routing:'
+
+#ifdef GridRiverLakeFlow
+      WRITE(*,'(A)') '  GridRiverLakeFlow                 : ON'
+#else
+      WRITE(*,'(A)') '  GridRiverLakeFlow                 : OFF'
+#endif
+
+#ifdef CaMa_Flood
+      WRITE(*,'(A)') '  CaMa_Flood                        : ON'
+#else
+      WRITE(*,'(A)') '  CaMa_Flood                        : OFF'
+#endif
+
+
+      ! ============================================================
+      ! Tracers
+      ! ============================================================
+
+      WRITE(*,'(/,A)') 'Tracer:'
+
+#ifdef TRACER
+      WRITE(*,'(A)') '  TRACER                            : ON'
+#else
+      WRITE(*,'(A)') '  TRACER                            : OFF'
+#endif
+
+
+      ! ============================================================
+      ! Biogeochemistry / crop
+      ! ============================================================
+
+      WRITE(*,'(/,A)') 'Biogeochemistry and land use:'
+
+#ifdef BGC
+      WRITE(*,'(A)') '  BGC                               : ON'
+#else
+      WRITE(*,'(A)') '  BGC                               : OFF'
+#endif
+
+#ifdef CROP
+      WRITE(*,'(A)') '  CROP                              : ON'
+#else
+      WRITE(*,'(A)') '  CROP                              : OFF'
+#endif
+
+#ifdef LULCC
+      WRITE(*,'(A)') '  LULCC                             : ON'
+#else
+      WRITE(*,'(A)') '  LULCC                             : OFF'
+#endif
+
+
+      ! ============================================================
+      ! Other optional components
+      ! ============================================================
+
+      WRITE(*,'(/,A)') 'Other components:'
+
+#ifdef DataAssimilation
+      WRITE(*,'(A)') '  DataAssimilation                  : ON'
+#else
+      WRITE(*,'(A)') '  DataAssimilation                  : OFF'
+#endif
+
+#ifdef USESplitAI
+      WRITE(*,'(A)') '  USESplitAI                        : ON'
+#else
+      WRITE(*,'(A)') '  USESplitAI                        : OFF'
+#endif
+
+#ifdef EXTERNAL_LAKE
+      WRITE(*,'(A)') '  EXTERNAL_LAKE                     : ON'
+#else
+      WRITE(*,'(A)') '  EXTERNAL_LAKE                     : OFF'
+#endif
+
+#ifdef HYPERSPECTRAL
+      WRITE(*,'(A)') '  HYPERSPECTRAL                     : ON'
+#else
+      WRITE(*,'(A)') '  HYPERSPECTRAL                     : OFF'
+#endif
+
+#ifdef extend_interception
+      WRITE(*,'(A)') '  extend_interception               : ON'
+#else
+      WRITE(*,'(A)') '  extend_interception               : OFF'
+#endif
+
+
+      WRITE(*,'(A)') '============================================================'
+      WRITE(*,*)
+
+   END SUBROUTINE print_compile_configuration
+
+
 
    ! ---------------
    SUBROUTINE sync_hist_vars (set_defaults)

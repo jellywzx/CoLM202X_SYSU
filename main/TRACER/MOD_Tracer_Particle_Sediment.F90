@@ -63,6 +63,7 @@ MODULE MOD_Tracer_Particle_Sediment
    real(r8), save :: sed_cfl_adv    ! CFL factor for suspended-sediment advection [-]
    real(r8), save :: sed_dt_max     ! Maximum sediment substep [s]
    real(r8), save :: sed_bed_depth  ! Initial named deposit-bed depth [m]
+   real(r8), save :: sed_max_conc   ! Maximum total suspended sediment volume concentration [-]
 
    real(r8), parameter :: SED_DEFAULT_LAMBDA = 0.4_r8
    real(r8), parameter :: SED_DEFAULT_LYRDPH = 0.05_r8
@@ -84,7 +85,7 @@ MODULE MOD_Tracer_Particle_Sediment
    real(r8), parameter :: SED_DEFAULT_PYLDPC = 2.0_r8
    real(r8), parameter :: SED_DEFAULT_DSYLUNIT = 1.0e-6_r8
 
-   real(r8), parameter :: MAX_SED_CONC = 0.1_r8  ! Maximum sediment concentration (10% by volume, matches CoLM-sed-master)
+   real(r8), parameter :: SED_DEFAULT_MAX_CONC = 0.1_r8  ! Maximum sediment concentration (10% by volume, matches CoLM-sed-master)
    real(r8), parameter :: SED_BEDLOAD_COEFF = 17._r8
    real(r8), parameter :: SED_PRECIP_THRESHOLD_MM_DAY = 2._r8
    real(r8), parameter :: EXCH_SHEARVEL_MIN = 1.e-4_r8
@@ -210,6 +211,7 @@ MODULE MOD_Tracer_Particle_Sediment
       real(r8) :: cfl_adv = -1._r8
       real(r8) :: max_timestep_s = -1._r8
       real(r8) :: bed_depth = -1._r8
+      real(r8) :: max_concentration = -1._r8
    end type sediment_parameter_type
 
    integer, save :: sediment_itrc = 0
@@ -390,6 +392,7 @@ CONTAINS
       sed_cfl_adv = SED_DEFAULT_CFL_ADV
       sed_dt_max = SED_DEFAULT_DT_MAX
       sed_bed_depth = SED_DEFAULT_BED_DEPTH
+      sed_max_conc = SED_DEFAULT_MAX_CONC
 
       parafile = DEF_UnitCatchment_file
 
@@ -433,6 +436,11 @@ CONTAINS
       CALL parse_grain_diameters()
       CALL calc_settling_velocities()
       CALL validate_sediment_parameters()
+
+      ! Print the final effective parameters after all overrides/defaults
+      ! and derived settling velocities have been resolved.
+      CALL print_sediment_runtime_parameters()
+
       CALL read_sediment_static_data(parafile)
       CALL allocate_sediment_vars()
       CALL initialize_sediment_state()
@@ -505,6 +513,7 @@ CONTAINS
           .not. ieee_is_finite(DEF_SEDIMENT%cfl_adv) .or. &
           .not. ieee_is_finite(DEF_SEDIMENT%max_timestep_s) .or. &
           .not. ieee_is_finite(DEF_SEDIMENT%bed_depth) .or. &
+          .not. ieee_is_finite(DEF_SEDIMENT%max_concentration) .or. &
           any(.not. ieee_is_finite(DEF_SEDIMENT%grain_diameter))) THEN
          IF (p_is_io) WRITE(*,'(A)') &
             'ERROR: sediment parameter file contains NaN or infinite values.'
@@ -549,6 +558,7 @@ CONTAINS
       IF (DEF_SEDIMENT%cfl_adv >= 0._r8) sed_cfl_adv = DEF_SEDIMENT%cfl_adv
       IF (DEF_SEDIMENT%max_timestep_s > 0._r8) sed_dt_max = DEF_SEDIMENT%max_timestep_s
       IF (DEF_SEDIMENT%bed_depth > 0._r8) sed_bed_depth = DEF_SEDIMENT%bed_depth
+      IF (DEF_SEDIMENT%max_concentration >= 0._r8) sed_max_conc = DEF_SEDIMENT%max_concentration
 
       IF (DEF_SEDIMENT%grain_diameter(1) > 0._r8) THEN
          IF (nsed > MAX_SED_PARAM_CLASSES) THEN
@@ -610,7 +620,9 @@ CONTAINS
           .not. ieee_is_finite(sed_ignore_dph) .or. &
           .not. ieee_is_finite(sed_cfl_adv) .or. &
           .not. ieee_is_finite(sed_dt_max) .or. &
-          .not. ieee_is_finite(sed_bed_depth)) THEN
+          .not. ieee_is_finite(sed_bed_depth) .or. &
+          .not. ieee_is_finite(sed_max_conc)) THEN
+
          IF (p_is_io) WRITE(*,'(A)') &
             'ERROR: sediment scalar configuration contains NaN or infinite values.'
          CALL CoLM_stop()
@@ -642,6 +654,10 @@ CONTAINS
       IF (sed_dt_max <= 0._r8) THEN
          IF (p_is_io) WRITE(*,*) 'ERROR: sediment max_timestep_s must be > 0, got ', sed_dt_max
          CALL CoLM_stop()
+      ENDIF
+      IF (sed_max_conc <= 0._r8 .or. sed_max_conc > 1._r8) THEN
+           IF (p_is_io) WRITE(*,*) 'ERROR: sediment max_concentration must satisfy 0 < max_concentration <= 1, got ', sed_max_conc
+           CALL CoLM_stop()
       ENDIF
       IF (sed_bed_depth <= 0._r8) THEN
          IF (p_is_io) WRITE(*,*) 'ERROR: sediment bed_depth must be > 0, got ', sed_bed_depth
@@ -767,7 +783,13 @@ CONTAINS
    real(r8) :: station_sedcon_total, station_sedout_total, station_sedout_abs_total
    real(r8) :: station_ssc_mg_l, station_ssl_t_day, station_ssl_abs_t_day
 #endif
+   real(r8) :: timing_local(8)
+   real(r8) :: timing_min(8)
+   real(r8) :: timing_max(8)
+   real(r8) :: timing_sum(8)
+   real(r8) :: timing_mean(8)
    real(r8), parameter :: CFL_RIVOUT_EPS = 1.e-12_r8
+
 
       IF (.not. sediment_particle_enabled()) RETURN
       IF (.not. p_is_worker) RETURN
@@ -840,8 +862,87 @@ CONTAINS
       d_raw_seen = .false.
       es_eff_seen = .false.
       d_eff_seen = .false.
+
 #ifdef CoLMDEBUG
-      CALL system_clock(clk_total_start, clk_rate)
+
+      CALL system_clock(clk_total_end, clk_rate)
+
+      IF (clk_rate > 0) THEN
+         t_total = real(clk_total_end - clk_total_start, r8) / real(clk_rate, r8)
+      ELSE
+         t_total = -1._r8
+      ENDIF
+
+      ! ---------------------------------------------------------------
+      ! timing_local:
+      ! 1 total
+      ! 2 yield
+      ! 3 advection
+      ! 4 input
+      ! 5 exchange
+      ! 6 layer redistribution
+      ! 7 diagnostics
+      ! 8 other/uninstrumented
+      ! ---------------------------------------------------------------
+
+      timing_local(1) = t_total
+      timing_local(2) = t_yield
+      timing_local(3) = t_adv
+      timing_local(4) = t_input
+      timing_local(5) = t_exchange
+      timing_local(6) = t_layer
+      timing_local(7) = t_diag
+
+      timing_local(8) = t_total - &
+         (t_yield + t_adv + t_input + t_exchange + t_layer + t_diag)
+
+      timing_min = timing_local
+      timing_max = timing_local
+      timing_sum = timing_local
+
+#ifdef USEMPI
+      CALL mpi_allreduce(MPI_IN_PLACE, timing_min, size(timing_min), &
+         MPI_REAL8, MPI_MIN, p_comm_worker, p_err)
+
+      CALL mpi_allreduce(MPI_IN_PLACE, timing_max, size(timing_max), &
+         MPI_REAL8, MPI_MAX, p_comm_worker, p_err)
+
+      CALL mpi_allreduce(MPI_IN_PLACE, timing_sum, size(timing_sum), &
+         MPI_REAL8, MPI_SUM, p_comm_worker, p_err)
+#endif
+
+      timing_mean = timing_sum / real(p_np_worker, r8)
+
+      IF (p_iam_worker == 0) THEN
+
+         WRITE(*,'(A,I0,A,I0,A,I0,A,F12.3)') &
+            'SED_PERF substeps: morph=', iter_sed, &
+            ', adv=', iter_adv, &
+            ', workers=', p_np_worker, &
+            ', routing_dt=', deltime
+
+         WRITE(*,'(A,3F12.3)') &
+            'SED_PERF total  min/mean/max [s] = ', &
+            timing_min(1), timing_mean(1), timing_max(1)
+
+         WRITE(*,'(A,3F12.3)') &
+            'SED_PERF adv    min/mean/max [s] = ', &
+            timing_min(3), timing_mean(3), timing_max(3)
+
+         WRITE(*,'(A,3F12.3)') &
+            'SED_PERF exch   min/mean/max [s] = ', &
+            timing_min(5), timing_mean(5), timing_max(5)
+
+         WRITE(*,'(A,3F12.3)') &
+            'SED_PERF diag   min/mean/max [s] = ', &
+            timing_min(7), timing_mean(7), timing_max(7)
+
+         WRITE(*,'(A,3F12.3)') &
+            'SED_PERF other  min/mean/max [s] = ', &
+            timing_min(8), timing_mean(8), timing_max(8)
+
+      ENDIF
+
 #endif
 
       ! Store precipitation averaging time before reset
@@ -2391,11 +2492,36 @@ CONTAINS
          ENDDO
       ENDDO
 
-      ! --- Step 5: Safety clamp (should be near-zero after rate-limiting) ---
+      ! --- Step 5: Safety clamp ---
       DO i = 1, numucat
          DO ised = 1, nsed
+
+            IF (sedsto(ised,i) < 0._r8 .or. layer(ised,i) < 0._r8) THEN
+               WRITE(*,'(A)') '========== SEDIMENT_NEGATIVE_STORAGE =========='
+               WRITE(*,'(A,I0)')       'worker          = ', p_iam_worker
+               WRITE(*,'(A,I0)')       'cell i          = ', i
+               WRITE(*,'(A,I0)')       'ucat_next       = ', ucat_next(i)
+               WRITE(*,'(A,I0)')       'sediment class  = ', ised
+               WRITE(*,'(A,ES24.14)')  'dt              = ', dt
+
+               WRITE(*,'(A,ES24.14)')  'sedsto before clamp = ', sedsto(ised,i)
+               WRITE(*,'(A,ES24.14)')  'layer before clamp  = ', layer(ised,i)
+
+               WRITE(*,'(A,ES24.14)')  'sedout          = ', sedout(ised,i)
+               WRITE(*,'(A,ES24.14)')  'sed_ups         = ', sed_ups(ised,i)
+               WRITE(*,'(A,ES24.14)')  'bedout          = ', bedout(ised,i)
+               WRITE(*,'(A,ES24.14)')  'bed_ups         = ', bed_ups(ised,i)
+
+               WRITE(*,'(A,ES24.14)')  'rivsto          = ', rivsto(i)
+               WRITE(*,'(A,ES24.14)')  'rivout          = ', rivout(i)
+
+               WRITE(*,'(A)') '==============================================='
+               FLUSH(6)
+            ENDIF
+
             sedsto(ised,i) = max(sedsto(ised,i), 0._r8)
-            layer(ised,i)  = max(layer(ised,i),  0._r8)
+            layer(ised,i)  = max(layer(ised,i), 0._r8)
+
          ENDDO
       ENDDO
 
@@ -2403,8 +2529,8 @@ CONTAINS
       DO i = 1, numucat
          IF (rivsto(i) > 0._r8) THEN
             sedsto_sum = sum(sedsto(:,i))
-            IF (sedsto_sum > rivsto(i) * MAX_SED_CONC) THEN
-               dTmp(:) = (sedsto_sum - rivsto(i) * MAX_SED_CONC) * &
+            IF (sedsto_sum > rivsto(i) * sed_max_conc) THEN
+               dTmp(:) = (sedsto_sum - rivsto(i) * sed_max_conc) * &
                   sedsto(:,i) / max(sedsto_sum, 1.e-20_r8)
                dTmp(:) = min(dTmp(:), sedsto(:,i))
                ! SEDIMENT_DRY_CAP_DEPOSIT_CREDIT: cap-induced deposition is a
@@ -2428,7 +2554,9 @@ CONTAINS
          ENDIF
          CALL assert_sediment_mass_balance('advection', i, cell_mass_before(i), &
             sum(sedsto(:,i)) + (1._r8 - lambda) * sum(layer(:,i)), &
-            dt * sum(-sedout(:,i) + sed_ups(:,i) - bedout(:,i) + bed_ups(:,i)))
+            dt * sum(-sedout(:,i) + sed_ups(:,i) - bedout(:,i) + bed_ups(:,i)), &
+            rivsto_i = rivsto(i), &
+            rivout_i = rivout(i))
       ENDDO
 
       deallocate(sedcon_next, layer_next, critshearvel_next, sed_ups, bed_ups, &
@@ -2509,7 +2637,7 @@ CONTAINS
    SUBROUTINE apply_sediment_input(dt, rivsto, bed_area)
    ! Apply hillslope erosion input after exchange, following CoLM-sed-master more closely.
    ! Add input to suspended storage when enough water is present, then apply a single
-   ! MAX_SED_CONC cap. For shallow/dry cells, deposit directly into the bed layer.
+   ! sed_max_conc cap. For shallow/dry cells, deposit directly into the bed layer.
    !-------------------------------------------------------------------------------------
    USE MOD_Grid_RiverLakeNetwork, only: numucat
    IMPLICIT NONE
@@ -2530,8 +2658,8 @@ CONTAINS
          IF (rivsto(i) >= bed_area(i) * sed_ignore_dph) THEN
             sedsto(:,i) = sedsto(:,i) + sedinp(:,i) * dt
             sedsto_sum = sum(sedsto(:,i))
-            IF (sedsto_sum > rivsto(i) * MAX_SED_CONC) THEN
-               dTmp(:) = (sedsto_sum - rivsto(i) * MAX_SED_CONC) &
+            IF (sedsto_sum > rivsto(i) * sed_max_conc) THEN
+               dTmp(:) = (sedsto_sum - rivsto(i) * sed_max_conc) &
                   * sedsto(:,i) / max(sedsto_sum, 1.e-20_r8)
                dTmp(:) = min(dTmp(:), sedsto(:,i))
                netflw(:,i) = netflw(:,i) - dTmp(:) / dt
@@ -2550,7 +2678,8 @@ CONTAINS
          ENDIF
          CALL assert_sediment_mass_balance('hillslope input', i, mass_before, &
             sum(sedsto(:,i)) + (1._r8 - lambda) * sum(layer(:,i)), &
-            sum(sedinp(:,i)) * dt)
+            sum(sedinp(:,i)) * dt, &
+            rivsto_i = rivsto(i))
       ENDDO
 
    END SUBROUTINE apply_sediment_input
@@ -2662,11 +2791,11 @@ CONTAINS
 
          ! Enforce concentration cap after exchange (matches CaMa's unconditional cap).
          ! Without this, strong entrainment (Es >> D) could push concentration above
-         ! MAX_SED_CONC indefinitely when there is no erosion input to trigger the
+         ! sed_max_conc indefinitely when there is no erosion input to trigger the
          ! cap in apply_sediment_input.
          sedsto_sum = sum(sedsto(:,i))
-         IF (rivsto(i) > 0._r8 .and. sedsto_sum > rivsto(i) * MAX_SED_CONC) THEN
-            dTmp(:) = (sedsto_sum - rivsto(i) * MAX_SED_CONC) &
+         IF (rivsto(i) > 0._r8 .and. sedsto_sum > rivsto(i) * sed_max_conc) THEN
+            dTmp(:) = (sedsto_sum - rivsto(i) * sed_max_conc) &
                * sedsto(:,i) / max(sedsto_sum, 1.e-20_r8)
             dTmp(:) = min(dTmp(:), sedsto(:,i))
             netflw(:,i) = netflw(:,i) - dTmp(:) / dt
@@ -2679,7 +2808,8 @@ CONTAINS
             sedcon(:,i) = sedsto(:,i) / rivsto(i)
          ENDIF
          CALL assert_sediment_mass_balance('exchange', i, mass_before, &
-            sum(sedsto(:,i)) + (1._r8 - lambda) * sum(layer(:,i)), 0._r8)
+            sum(sedsto(:,i)) + (1._r8 - lambda) * sum(layer(:,i)), 0._r8, &
+            rivsto_i = rivsto(i))
       ENDDO
 
    END SUBROUTINE calc_sediment_exchange
@@ -2797,22 +2927,106 @@ CONTAINS
 
    END SUBROUTINE calc_layer_redistribution
 
+
    !-------------------------------------------------------------------------------------
-   SUBROUTINE assert_sediment_mass_balance(context, index, before, after, expected_change)
+   SUBROUTINE assert_sediment_mass_balance(context, index, before, after, expected_change, &
+                                        rivsto_i, rivout_i)
+   USE MOD_Grid_RiverLakeNetwork, only: ucat_next
+   IMPLICIT NONE
+
    character(len=*), intent(in) :: context
    integer, intent(in) :: index
    real(r8), intent(in) :: before, after, expected_change
-   real(r8) :: residual, scale, tolerance
+   real(r8), intent(in), optional :: rivsto_i, rivout_i
 
-      residual = after - before - expected_change
-      scale = max(abs(before), abs(after), abs(expected_change))
-      tolerance = SED_BALANCE_ABS_TOL + SED_BALANCE_REL_TOL * scale
-      IF (.not. ieee_is_finite(residual) .or. abs(residual) > tolerance) THEN
-         IF (p_is_io) WRITE(*,'(A,1X,A,1X,I0,3(1X,ES14.6))') &
-            'ERROR sediment balance:', trim(context), index, residual, tolerance, scale
-         CALL CoLM_stop('sediment mass balance failure')
+   real(r8) :: residual, scale, tolerance
+   integer :: ised, ilyr
+
+   residual = after - before - expected_change
+   scale = max(abs(before), abs(after), abs(expected_change))
+   tolerance = SED_BALANCE_ABS_TOL + SED_BALANCE_REL_TOL * scale
+
+   IF (.not. ieee_is_finite(residual) .or. abs(residual) > tolerance) THEN
+
+      ! IMPORTANT:
+      ! Do NOT use "IF (p_is_io)" here.
+      ! Sediment calculation runs on worker ranks, so the failing worker
+      ! must print its own diagnostics.
+
+      WRITE(*,'(A)') ' '
+      WRITE(*,'(A)') '============================================================'
+      WRITE(*,'(A)') 'SEDIMENT MASS BALANCE FAILURE'
+      WRITE(*,'(A)') '============================================================'
+
+      WRITE(*,'(A,A)')        'context          = ', trim(context)
+      WRITE(*,'(A,I0)')       'worker           = ', p_iam_worker
+      WRITE(*,'(A,I0)')       'local cell i     = ', index
+      WRITE(*,'(A,I0)')       'ucat_next        = ', ucat_next(index)
+
+      WRITE(*,'(A,ES24.14)')  'mass before      = ', before
+      WRITE(*,'(A,ES24.14)')  'mass after       = ', after
+      WRITE(*,'(A,ES24.14)')  'expected change  = ', expected_change
+      WRITE(*,'(A,ES24.14)')  'residual         = ', residual
+      WRITE(*,'(A,ES24.14)')  'tolerance        = ', tolerance
+      WRITE(*,'(A,ES24.14)')  'scale            = ', scale
+
+      IF (present(rivsto_i)) THEN
+         WRITE(*,'(A,ES24.14)') 'rivsto [m3]      = ', rivsto_i
+      ELSE
+         WRITE(*,'(A)')         'rivsto [m3]      = not supplied'
       ENDIF
+
+      IF (present(rivout_i)) THEN
+         WRITE(*,'(A,ES24.14)') 'rivout [m3/s]    = ', rivout_i
+      ELSE
+         WRITE(*,'(A)')         'rivout [m3/s]    = not supplied'
+      ENDIF
+
+      WRITE(*,'(A)') ' '
+      WRITE(*,'(A)') '--- sediment classes ---'
+
+      DO ised = 1, nsed
+         WRITE(*,'(A,I0)') 'sediment class = ', ised
+
+         WRITE(*,'(A,ES24.14)') '  sedsto           = ', sedsto(ised,index)
+         WRITE(*,'(A,ES24.14)') '  sedcon           = ', sedcon(ised,index)
+         WRITE(*,'(A,ES24.14)') '  layer            = ', layer(ised,index)
+         WRITE(*,'(A,ES24.14)') '  sedout           = ', sedout(ised,index)
+         WRITE(*,'(A,ES24.14)') '  bedout           = ', bedout(ised,index)
+         WRITE(*,'(A,ES24.14)') '  sedinp           = ', sedinp(ised,index)
+         WRITE(*,'(A,ES24.14)') '  netflw           = ', netflw(ised,index)
+         WRITE(*,'(A,ES24.14)') '  exch_es_raw      = ', exch_es_raw(ised,index)
+         WRITE(*,'(A,ES24.14)') '  exch_d_raw       = ', exch_d_raw(ised,index)
+         WRITE(*,'(A,ES24.14)') '  exch_es_eff      = ', exch_es_eff(ised,index)
+         WRITE(*,'(A,ES24.14)') '  exch_d_eff       = ', exch_d_eff(ised,index)
+         WRITE(*,'(A,ES24.14)') '  netflw_adv_step  = ', netflw_adv_step(ised,index)
+         WRITE(*,'(A,ES24.14)') '  exch_d_adv_step  = ', exch_d_adv_step(ised,index)
+
+         DO ilyr = 1, totlyrnum
+            WRITE(*,'(A,I0,A,ES24.14)') &
+               '  seddep layer ', ilyr, ' = ', seddep(ised,ilyr,index)
+         ENDDO
+      ENDDO
+
+      WRITE(*,'(A)') ' '
+      WRITE(*,'(A,ES24.14)') 'sum sedsto       = ', sum(sedsto(:,index))
+      WRITE(*,'(A,ES24.14)') 'sum layer        = ', sum(layer(:,index))
+      WRITE(*,'(A,ES24.14)') 'sum seddep       = ', sum(seddep(:,:,index))
+      WRITE(*,'(A,ES24.14)') 'bed solid layer  = ', &
+         (1._r8-lambda) * sum(layer(:,index))
+      WRITE(*,'(A,ES24.14)') 'bed solid total  = ', &
+         (1._r8-lambda) * (sum(layer(:,index)) + sum(seddep(:,:,index)))
+
+      WRITE(*,'(A)') '============================================================'
+      WRITE(*,'(A)') ' '
+
+      FLUSH(6)
+
+      CALL CoLM_stop('sediment mass balance failure')
+   ENDIF
+
    END SUBROUTINE assert_sediment_mass_balance
+   !-------------------------------------------------------------------------------------
 
    !-------------------------------------------------------------------------------------
    SUBROUTINE calc_sediment_yield(fldfrc, grarea, prcp_time)
@@ -2985,7 +3199,7 @@ CONTAINS
          CALL check_sediment_restart_scalar(file_restart, ncid, 'sed_dsylunit_meta', &
             dsylunit, numucat, ucat_data_address, meta_bad)
          CALL check_sediment_restart_scalar(file_restart, ncid, 'sed_max_conc_meta', &
-            MAX_SED_CONC, numucat, ucat_data_address, meta_bad)
+            sed_max_conc, numucat, ucat_data_address, meta_bad)
          CALL check_sediment_restart_scalar(file_restart, ncid, 'sed_bedload_coeff_meta', &
             SED_BEDLOAD_COEFF, numucat, ucat_data_address, meta_bad)
          CALL check_sediment_restart_scalar(file_restart, ncid, 'sed_precip_threshold_meta', &
@@ -3494,7 +3708,7 @@ CONTAINS
       CALL write_sediment_scalar_meta(file_restart, 'sed_pyldc_meta', pyldc)
       CALL write_sediment_scalar_meta(file_restart, 'sed_pyldpc_meta', pyldpc)
       CALL write_sediment_scalar_meta(file_restart, 'sed_dsylunit_meta', dsylunit)
-      CALL write_sediment_scalar_meta(file_restart, 'sed_max_conc_meta', MAX_SED_CONC)
+      CALL write_sediment_scalar_meta(file_restart, 'sed_max_conc_meta', sed_max_conc)
       CALL write_sediment_scalar_meta(file_restart, 'sed_bedload_coeff_meta', SED_BEDLOAD_COEFF)
       CALL write_sediment_scalar_meta(file_restart, 'sed_precip_threshold_meta', &
          SED_PRECIP_THRESHOLD_MM_DAY)
@@ -3940,6 +4154,73 @@ CONTAINS
       IF (allocated(sed_diag_station_local_i)) deallocate(sed_diag_station_local_i)
 #endif
    END SUBROUTINE grid_sediment_final
+
+   !-------------------------------------------------------------------------------------
+   SUBROUTINE print_sediment_runtime_parameters()
+   !-------------------------------------------------------------------------------------
+   IMPLICIT NONE
+
+   integer :: ised
+
+   ! Print exactly once.
+   IF (.not. p_is_master) RETURN
+
+   WRITE(*,'(A)') ' '
+   WRITE(*,'(A)') '============================================================'
+   WRITE(*,'(A)') 'SEDIMENT EFFECTIVE PARAMETERS'
+   WRITE(*,'(A)') '============================================================'
+
+   WRITE(*,'(A,I0)')       'nsed                         = ', nsed
+   WRITE(*,'(A,I0)')       'nlfp_sed                     = ', nlfp_sed
+   WRITE(*,'(A,I0)')       'ndeposit_layers              = ', totlyrnum
+
+   WRITE(*,'(A,ES20.10)')  'grain_density [kg/m3]        = ', psedD * 1000._r8
+   WRITE(*,'(A,ES20.10)')  'water_density [kg/m3]        = ', pwatD * 1000._r8
+   WRITE(*,'(A,ES20.10)')  'porosity                     = ', lambda
+
+   WRITE(*,'(A,ES20.10)')  'ignore_depth_m [m]           = ', sed_ignore_dph
+   WRITE(*,'(A,ES20.10)')  'active_layer_depth [m]       = ', lyrdph
+   WRITE(*,'(A,ES20.10)')  'bed_depth [m]                = ', sed_bed_depth
+
+   WRITE(*,'(A,ES20.10)')  'viscosity [m2/s]             = ', visKin
+   WRITE(*,'(A,ES20.10)')  'von_karman                   = ', vonKar
+   WRITE(*,'(A,ES20.10)')  'settling_multiplier          = ', pset
+
+   WRITE(*,'(A,ES20.10)')  'yield_coefficient            = ', pyld
+   WRITE(*,'(A,ES20.10)')  'slope_exponent               = ', pyldc
+   WRITE(*,'(A,ES20.10)')  'precipitation_exponent       = ', pyldpc
+   WRITE(*,'(A,ES20.10)')  'unit_conversion              = ', dsylunit
+
+   WRITE(*,'(A,ES20.10)')  'cfl_adv                      = ', sed_cfl_adv
+   WRITE(*,'(A,ES20.10)')  'max_timestep_s [s]           = ', sed_dt_max
+
+   WRITE(*,'(A)') ' '
+   WRITE(*,'(A)') '--- Grain classes ---'
+
+   DO ised = 1, nsed
+      WRITE(*,'(A,I0,A,ES20.10)') &
+         'grain_diameter(', ised, ') [m] = ', sDiam(ised)
+
+      WRITE(*,'(A,I0,A,ES20.10)') &
+         'settling_velocity(', ised, ') [m/s] = ', setvel(ised)
+   ENDDO
+
+   WRITE(*,'(A)') ' '
+   WRITE(*,'(A)') '--- Compiled sediment numerical constants ---'
+
+   WRITE(*,'(A,ES20.10)') 'SED_NEAR_DRY_DEPTH [m]       = ', SED_NEAR_DRY_DEPTH
+   WRITE(*,'(A,I0)')      'SED_MAX_ADV_SUBSTEPS          = ', SED_MAX_ADV_SUBSTEPS
+   WRITE(*,'(A,ES20.10)') 'SED_BALANCE_ABS_TOL           = ', SED_BALANCE_ABS_TOL
+   WRITE(*,'(A,ES20.10)') 'SED_BALANCE_REL_TOL           = ', SED_BALANCE_REL_TOL
+   WRITE(*,'(A,ES20.10)') 'SED_BEDLOAD_COEFF             = ', SED_BEDLOAD_COEFF
+   WRITE(*,'(A,ES20.10)') 'SED_PRECIP_THRESHOLD_MM_DAY   = ', &
+      SED_PRECIP_THRESHOLD_MM_DAY
+
+   WRITE(*,'(A)') '============================================================'
+   WRITE(*,'(A)') ' '
+
+   END SUBROUTINE print_sediment_runtime_parameters
+   !-------------------------------------------------------------------------------------
 
 END MODULE MOD_Tracer_Particle_Sediment
 #endif
