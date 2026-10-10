@@ -2009,8 +2009,9 @@ CONTAINS
                exch_d_adv_step(:,i) = exch_d_adv_step(:,i) + settled / dt_morph
                excess = max(sum(sedsto_protected(:,i)) - protected_end(i) * MAX_SED_CONC, 0._r8)
                IF (excess > 0._r8) THEN
-                  transfer = min(sedsto_protected(:,i), &
-                     excess * sedsto_protected(:,i) / sum(sedsto_protected(:,i)))
+                  transfer = merge(sedsto_protected(:,i), min(sedsto_protected(:,i), &
+                     excess * sedsto_protected(:,i) / sum(sedsto_protected(:,i))), &
+                     excess >= sum(sedsto_protected(:,i)))
                   sedsto_protected(:,i) = sedsto_protected(:,i) - transfer
                   sedbed_protected(:,i) = sedbed_protected(:,i) + transfer
                   netflw_adv_step(:,i) = netflw_adv_step(:,i) - transfer / dt_morph
@@ -2025,7 +2026,8 @@ CONTAINS
             IF (visible_water(i) > 0._r8) THEN
                excess = max(sum(sedsto(:,i)) - visible_water(i) * MAX_SED_CONC, 0._r8)
                IF (excess > 0._r8) THEN
-                  transfer = min(sedsto(:,i), excess * sedsto(:,i) / sum(sedsto(:,i)))
+                  transfer = merge(sedsto(:,i), min(sedsto(:,i), excess * sedsto(:,i) / sum(sedsto(:,i))), &
+                     excess >= sum(sedsto(:,i)))
                   sedsto(:,i) = sedsto(:,i) - transfer
                   layer(:,i) = layer(:,i) + transfer / (1._r8 - lambda)
                   netflw_adv_step(:,i) = netflw_adv_step(:,i) - transfer / dt_morph
@@ -2309,7 +2311,8 @@ CONTAINS
          IF (visible_water(i) > 0._r8) THEN
             excess = max(sum(sedsto(:,i)) - visible_water(i) * MAX_SED_CONC, 0._r8)
             IF (excess > 0._r8) THEN
-               deposit = min(sedsto(:,i), excess * sedsto(:,i) / sum(sedsto(:,i)))
+               deposit = merge(sedsto(:,i), min(sedsto(:,i), excess * sedsto(:,i) / sum(sedsto(:,i))), &
+                  excess >= sum(sedsto(:,i)))
                sedsto(:,i) = sedsto(:,i) - deposit
                layer(:,i) = layer(:,i) + deposit / (1._r8 - lambda)
                netflw_adv_step(:,i) = netflw_adv_step(:,i) - deposit / dt_morph
@@ -2847,7 +2850,7 @@ CONTAINS
       IF (present(initial_bed)) avail_bed_solid = (1._r8 - lambda) * layer
       cell_mass_before = sum(sedsto, dim=1) + (1._r8 - lambda) * sum(layer, dim=1)
 
-      CALL calc_sediment_advection_one_direction(dt, rivout_forward, bed_donor, avail_sto, avail_bed_solid, &
+      CALL calc_sediment_advection_one_direction(dt, rivout_forward, rivout_abs, bed_donor, avail_sto, avail_bed_solid, &
          initial_conc, joint_sed_scale, joint_bed_scale)
       sedout_first = sedout
       bedout_first = bedout
@@ -2855,7 +2858,7 @@ CONTAINS
       ! *same* initial inventory, including across worker boundaries.
       avail_sto = max(avail_sto - max(sedout_first, 0._r8) * dt, 0._r8)
       avail_bed_solid = max(avail_bed_solid - max(bedout_first, 0._r8) * dt, 0._r8)
-      CALL calc_sediment_advection_one_direction(dt, rivout_reverse, bed_donor, avail_sto, avail_bed_solid, &
+      CALL calc_sediment_advection_one_direction(dt, rivout_reverse, rivout_abs, bed_donor, avail_sto, avail_bed_solid, &
          initial_conc, joint_sed_scale, joint_bed_scale)
       sedout = sedout + sedout_first
       bedout = bedout + bedout_first
@@ -2914,7 +2917,7 @@ CONTAINS
    END SUBROUTINE calc_sediment_advection
 
    !-------------------------------------------------------------------------------------
-   SUBROUTINE calc_sediment_advection_one_direction(dt, rivout, bed_donor, avail_sto, avail_bed_solid, &
+   SUBROUTINE calc_sediment_advection_one_direction(dt, rivout, rivout_abs, bed_donor, avail_sto, avail_bed_solid, &
       donor_conc, donor_sed_scale, donor_bed_scale, limit_stock)
    ! Calculate and limit face fluxes only; the caller applies their combined
    ! divergence after both flow directions have used the same donor snapshot.
@@ -2923,14 +2926,14 @@ CONTAINS
    USE MOD_WorkerPushData
    IMPLICIT NONE
 
-   real(r8), intent(in) :: dt, rivout(:)
+   real(r8), intent(in) :: dt, rivout(:), rivout_abs(:)
    real(r8), intent(in) :: bed_donor(:,:), avail_sto(:,:), avail_bed_solid(:,:)
    real(r8), optional, intent(in) :: donor_conc(:,:), donor_sed_scale(:,:), donor_bed_scale(:,:)
    logical, optional, intent(in) :: limit_stock
    real(r8), allocatable, save :: sedcon_next(:,:), layer_next(:,:), critshearvel_next(:,:)
    real(r8), allocatable, save :: shearvel_next(:), rivwth_next(:)
    real(r8), allocatable :: sed_scale_next(:,:), bed_scale_next(:,:)
-   real(r8) :: plusVel, minusVel, layer_sum
+   real(r8) :: plusVel, minusVel, layer_sum, bed_weight
    integer :: i, ised
 
       IF (.not. p_is_worker) RETURN
@@ -2968,6 +2971,12 @@ CONTAINS
             sedout(:,i) = sedcon_next(:,i) * rivout(i)
          ENDIF
          bedout(:,i) = 0._r8
+         ! Bedload depends on the period-mean shear, not on discharge, so each
+         ! direction carries only its share of the period: |rivout|/rivout_abs
+         ! (1 for one-way flow). Without it a tiny reverse share added a second
+         ! full-strength bedload, doubling the gross transport.
+         bed_weight = 0._r8
+         IF (rivout_abs(i) > 0._r8) bed_weight = abs(rivout(i)) / rivout_abs(i)
          IF (rivout(i) > 0._r8) THEN
             layer_sum = sum(bed_donor(:,i))
             IF (.not. all(critshearvel(:,i) >= shearvel(i)) .and. layer_sum > 0._r8) THEN
@@ -2976,7 +2985,7 @@ CONTAINS
                   plusVel = shearvel(i) + critshearvel(ised,i)
                   minusVel = shearvel(i) - critshearvel(ised,i)
                   bedout(ised,i) = SED_BEDLOAD_COEFF * topo_rivwth(i) * plusVel * minusVel**2 &
-                     / ((psedD-pwatD)/pwatD) / grav * bed_donor(ised,i) / layer_sum
+                     / ((psedD-pwatD)/pwatD) / grav * bed_donor(ised,i) / layer_sum * bed_weight
                ENDDO
             ENDIF
          ELSEIF (rivout(i) < 0._r8) THEN
@@ -2987,7 +2996,7 @@ CONTAINS
                   plusVel = shearvel_next(i) + critshearvel_next(ised,i)
                   minusVel = shearvel_next(i) - critshearvel_next(ised,i)
                   bedout(ised,i) = -SED_BEDLOAD_COEFF * rivwth_next(i) * plusVel * minusVel**2 &
-                     / ((psedD-pwatD)/pwatD) / grav * layer_next(ised,i) / layer_sum
+                     / ((psedD-pwatD)/pwatD) / grav * layer_next(ised,i) / layer_sum * bed_weight
                ENDDO
             ENDIF
          ENDIF
@@ -3056,12 +3065,12 @@ CONTAINS
       allocate(qface(numucat), reverse_sed(numucat), reverse_bed(numucat))
       allocate(summed_sed(numucat), summed_bed(numucat))
       qface = max(0._r8, 0.5_r8 * (rivout_abs + rivout_signed))
-      CALL calc_sediment_advection_one_direction(dt, qface, initial_bed, sedsto, &
+      CALL calc_sediment_advection_one_direction(dt, qface, rivout_abs, initial_bed, sedsto, &
          (1._r8-lambda)*initial_bed, donor_conc=initial_conc, limit_stock=.false.)
       suspended_demand = max(sedout, 0._r8) * dt
       bed_demand = max(bedout, 0._r8) * dt
       qface = min(0._r8, 0.5_r8 * (rivout_signed - rivout_abs))
-      CALL calc_sediment_advection_one_direction(dt, qface, initial_bed, sedsto, &
+      CALL calc_sediment_advection_one_direction(dt, qface, rivout_abs, initial_bed, sedsto, &
          (1._r8-lambda)*initial_bed, donor_conc=initial_conc, limit_stock=.false.)
       DO ised = 1, nsed
          reverse_sed = max(-sedout(ised,:), 0._r8) * dt

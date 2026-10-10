@@ -149,6 +149,7 @@ CONTAINS
             trc_rnof_step(itrc, ipatch) = 0._r8
             IF (allocated(trc_reactive_source_step)) trc_reactive_source_step(itrc, ipatch) = 0._r8
             IF (allocated(trc_numerical_residual_step)) trc_numerical_residual_step(itrc, ipatch) = 0._r8
+            IF (allocated(trc_numerical_water_step)) trc_numerical_water_step(itrc, ipatch) = 0._r8
 
          ! Phase-1 re-sync of the irrigation reservoir tracer to current
          ! waterstorage. Under no-fractionation tests all refills arrive at
@@ -332,7 +333,7 @@ CONTAINS
       real(r8) :: step_input_check, step_output_check
       real(r8) :: step_rsur, step_rsub, step_qinfl, step_qcharge
       real(r8) :: step_vapor_exchange
-      real(r8) :: R_init, water_err, water_err_R, err_minus_water, check_err
+      real(r8) :: R_init, water_err, water_err_R, err_minus_water, check_err, booked_host_water
       real(r8) :: reactive_source_sink, numerical_source_sink
       real(r8) :: water_dS, water_input, water_output, water_evap, water_rnof
       real(r8) :: dS_minus_water_R, in_minus_water_R, out_minus_water_R
@@ -464,7 +465,13 @@ CONTAINS
          ELSE
             water_err = 0._r8
          ENDIF
-         water_err_R = water_err * R_init
+         booked_host_water = 0._r8
+         IF (allocated(trc_numerical_water_step)) THEN
+            IF (water_err * trc_numerical_water_step(itrc, ipatch) > 0._r8) &
+               booked_host_water = sign(min(abs(water_err), &
+                  abs(trc_numerical_water_step(itrc, ipatch))), water_err)
+         ENDIF
+         water_err_R = (water_err - booked_host_water) * R_init
          err_minus_water = err - water_err_R
          ! The hard tracer check should ignore host water-budget non-closure
          ! for isotope tracers. Fractionation and runtime atmospheric forcing
@@ -523,13 +530,10 @@ CONTAINS
          signature_error = 0._r8
          signature_scale = 0._r8
          IF (fixed_signature_step) THEN
-            IF (present(water_input_in)) THEN
-               signature_error = max(signature_error, abs(in_minus_water_R))
-               signature_scale = max(signature_scale, abs(step_input), abs(water_input * R_init))
-            ENDIF
-            IF (present(water_evap_in)) THEN
-               signature_error = max(signature_error, abs(evap_minus_water_R))
-               signature_scale = max(signature_scale, abs(step_evap), abs(water_evap * R_init))
+            IF (present(water_input_in) .or. present(water_evap_in)) THEN
+               signature_error = max(signature_error, abs(in_minus_water_R - evap_minus_water_R))
+               signature_scale = max(signature_scale, abs(step_input), abs(water_input * R_init), &
+                  abs(step_evap), abs(water_evap * R_init))
             ENDIF
 #ifndef CatchLateralFlow
             IF (present(water_rnof_in)) THEN

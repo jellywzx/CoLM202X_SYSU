@@ -36,14 +36,14 @@ MODULE MOD_Tracer_SoilWater
          trc_wdsrf, trc_wetwat, trc_surface_residue, trc_subsurface_residue, &
          trc_waterstorage, trc_solid_soisno, trc_surface_solid, &
          trc_subsurface_solid, trc_waterstorage_solid, &
-            a_trc_precip, a_trc_transp_src, a_trc_evap, a_trc_transp, &
+            a_trc_precip, a_water_precip, a_trc_transp_src, a_trc_evap, a_trc_transp, &
             a_water_transp, a_water_evap_gross, tracer_book_evap_loss, &
             TRC_EVAP_KIND_TRANSP, TRC_EVAP_KIND_SOILEVAP, TRC_EVAP_KIND_SUBL, &
             TRC_EVAP_KIND_WETLAND, &
             a_trc_qinfl, a_trc_qcharge, a_trc_rsur, a_trc_rsub, a_trc_rnof, &
          trc_pg_rain_ground, trc_rnof_step, trc_sm_carry, &
          trc_leaf_delta_e, trc_leaf_delta_b, trc_leaf_peclet, trc_leaf_water_moles, &
-         trc_leaf_iso_storage, trc_numerical_residual_step
+         trc_leaf_iso_storage, trc_numerical_residual_step, trc_numerical_water_step
 
    IMPLICIT NONE
 
@@ -95,7 +95,7 @@ CONTAINS
       etroot_actual, etroot_aquifer, &
       qflx_irrig_ground, waterstorage_patch, &
       imperv_evap_wdsrf, imperv_evap_soil, imperv_subl_soil, &
-      snow_qout_layer, tleaf_frac, t_soisno_frac, forc_q_frac, forc_psrf_frac, lai_frac, rst_frac, ra_frac, &
+      snow_qout_layer, qgtop_solver, tleaf_frac, t_soisno_frac, forc_q_frac, forc_psrf_frac, lai_frac, rst_frac, ra_frac, &
       rss_frac, dz_soi_frac, porsl_frac, dz_sno_frac, flood_tracer_input, flood_infil_water, &
       etroot_surface, dew_overflow, frost_displaced, late_surface_runoff, &
       rsub_source_layer, rsub_source_surface, rsub_source_aquifer, permeable_soil)
@@ -173,6 +173,7 @@ CONTAINS
       real(r8), intent(in), optional :: imperv_evap_soil
       real(r8), intent(in), optional :: imperv_subl_soil
       real(r8), intent(in), optional :: snow_qout_layer(snl+1:0)
+      real(r8), intent(in), optional :: qgtop_solver
       real(r8), intent(in), optional :: tleaf_frac
       real(r8), intent(in), optional :: t_soisno_frac(snl+1:nl_soil)
       real(r8), intent(in), optional :: forc_q_frac
@@ -216,6 +217,12 @@ CONTAINS
          real(r8) :: water_resid, water_shadow_ratio
       real(r8) :: trc_soil_upflow         ! tracer from true soil-to-surface upflow
       real(r8) :: trc_soil_evap           ! tracer removed by top-boundary evaporation deficit
+      real(r8) :: trc_upflow_deferred     ! upflow tracer layer 1 pays after the qlayer transfers
+      real(r8) :: trc_wliq_qlayer_bef(1:nl_soil), water_shadow_qlayer_bef(1:nl_soil)
+      real(r8) :: qlayer_through(1:nl_soil)
+      real(r8) :: evap_base_water         ! surface water excluding this step's exfiltration
+      integer  :: qlayer_pass
+      logical  :: qlayer_clamp
       real(r8) :: qgtop_est
       ! Snow top-layer effective flux selectors
       real(r8) :: eff_qseva_snow, eff_qsdew_snow, eff_qsubl_snow, eff_qfros_snow
@@ -234,7 +241,7 @@ CONTAINS
       real(r8) :: top_infil_water       ! surface-to-soil infiltration water [mm/step]
       real(r8) :: flood_water, surface_base_water, surface_base_balance
       real(r8) :: flood_ground_evap_water, flood_ground_evap_tracer
-      real(r8) :: late_water, late_tracer, late_ratio, late_runoff_water, early_runoff_water
+      real(r8) :: late_water, late_tracer, late_ratio, late_runoff_water, early_runoff_water, late_scale
       real(r8) :: flood_destination_water
       real(r8) :: top_exfil_water       ! soil-to-surface exfiltration water [mm/step]
       real(r8) :: top_boundary_out_water ! total negative qinfl water [mm/step]
@@ -272,8 +279,9 @@ CONTAINS
       real(r8) :: transp_water_total, xylem_tracer_total, xylem_ratio
       real(r8) :: root_return_water, root_return_tracer, root_return_tracer_total
       real(r8) :: root_gross_water, root_gross_tracer, return_ratio
+      real(r8) :: root_return_excess, excess_ratio
       real(r8) :: aquifer_ratio
-      real(r8) :: aquifer_water_pre_qcharge
+      real(r8) :: aquifer_water_pre_qcharge, aquifer_orphan_mass
       real(r8) :: aquifer_ref_water, aquifer_ref_mass, aquifer_actual_mass
       real(r8) :: surface_et_water, surface_root_return, surface_et_ratio
       real(r8) :: dew_surface_water, frost_surface_water
@@ -295,7 +303,7 @@ CONTAINS
       real(r8) :: source_fallback_ratio
       real(r8) :: relhum_leaf, leaf_area_use, rst_use, ra_use, tleaf_use
       real(r8) :: leaf_delta_e_new, leaf_delta_b_new, leaf_peclet_new, leaf_moles_new
-      real(r8) :: soil_resid_trc
+      real(r8) :: soil_resid_trc, soil_resid_water
       logical  :: transp_frac_active
 
       IF (ntracers <= 0) RETURN
@@ -343,6 +351,7 @@ CONTAINS
          R_precip = tracer_forcing_precip_value(itrc, ipatch)
          R_atm = tracer_forcing_vapor_value(itrc, ipatch)
          soil_resid_trc = 0._r8
+         soil_resid_water = 0._r8
          water_shadow(1:nl_soil) = wliq_soisno_bef(1:nl_soil)
 
          IF (tracer_is_nonvolatile_solute(itrc) .and. &
@@ -445,8 +454,7 @@ CONTAINS
                root_gross_water = transp_water_total
                root_return_water = -sum(min(etroot_actual, 0._r8)) &
                   + max(-etroot_aquifer, 0._r8) + surface_root_return
-               IF (root_return_water > root_gross_water + 1.e-9_r8) &
-                  CALL CoLM_stop('plant hydraulic root return exceeds resolved uptake')
+               root_return_excess = max(root_return_water - root_gross_water, 0._r8)
                transp_water_total = max(root_gross_water - root_return_water, 0._r8)
                root_gross_tracer = 0._r8
                   transp_ratio = xylem_ratio
@@ -516,10 +524,21 @@ CONTAINS
          ! Use the tracer mass actually removed from positive root donors;
          ! a finite-pool cap must never make reverse flow mint isotope mass.
          return_ratio = xylem_ratio
+         excess_ratio = 0._r8
          IF (root_return_water > trc_tiny .and. .not. tracer_is_nonvolatile_solute(itrc)) THEN
-            IF (root_gross_water <= trc_tiny) &
-               CALL CoLM_stop('plant hydraulic isotope return without resolved donor water')
-            return_ratio = root_gross_tracer/root_gross_water
+            IF (present(tleaf_frac)) THEN
+               excess_ratio = deposition_ratio_for(tleaf_frac, .false.)
+            ELSE
+               excess_ratio = deposition_ratio_for(layer_temp(1), .false.)
+            ENDIF
+            IF (root_gross_water > trc_tiny .and. root_return_excess <= 0._r8) THEN
+               return_ratio = root_gross_tracer/root_gross_water
+            ELSEIF (root_gross_water > trc_tiny) THEN
+               return_ratio = (root_gross_tracer*(root_return_water-root_return_excess)/root_gross_water &
+                  + root_return_excess*excess_ratio) / root_return_water
+            ELSE
+               return_ratio = excess_ratio
+            ENDIF
             xylem_ratio = return_ratio
             transp_ratio = return_ratio
          ENDIF
@@ -573,7 +592,8 @@ CONTAINS
                root_return_tracer_total = root_return_tracer_total + root_return_tracer
             ENDIF
             IF (.not. tracer_is_nonvolatile_solute(itrc)) THEN
-               IF (root_return_tracer_total > root_gross_tracer + 1.e-12_r8) &
+               IF (root_return_tracer_total > root_gross_tracer + root_return_excess*excess_ratio + &
+                   max(1.e-12_r8, 1.e-9_r8*abs(return_ratio))) &
                   CALL CoLM_stop('plant hydraulic isotope return exceeds actual donor isotope')
                IF (transp_frac_active) THEN
                   transp_source_tracer_total = transp_source_tracer_total - root_return_tracer_total
@@ -684,6 +704,7 @@ CONTAINS
                deposition_ratio_for(layer_temp(lb_snow), .true.) * deltim
             trc_wice_soisno(itrc, lb_snow, ipatch) = trc_wice_soisno(itrc, lb_snow, ipatch) + trc_flux
             a_trc_precip(itrc, ipatch) = a_trc_precip(itrc, ipatch) + trc_flux
+            a_water_precip(itrc, ipatch) = a_water_precip(itrc, ipatch) + max(eff_qfros_snow, 0._r8) * deltim
 
             ! Post-frost ice pool (water and tracer)
             water_ice_pool = wice_soisno_bef(lb_snow) + max(eff_qfros_snow, 0._r8) * deltim
@@ -745,6 +766,7 @@ CONTAINS
                deposition_ratio_for(layer_temp(lb_snow), .false.) * deltim
             trc_wliq_soisno(itrc, lb_snow, ipatch) = trc_wliq_soisno(itrc, lb_snow, ipatch) + trc_flux
             a_trc_precip(itrc, ipatch) = a_trc_precip(itrc, ipatch) + trc_flux
+            a_water_precip(itrc, ipatch) = a_water_precip(itrc, ipatch) + max(eff_qsdew_snow, 0._r8) * deltim
 
             ! Evaporate from the full pool (wliq_bef + qsubl_deficit + rain + dew)
             IF (eff_qseva_snow > trc_tiny) THEN
@@ -912,6 +934,7 @@ CONTAINS
          ! ============================================================
 
          trc_soil_upflow = 0._r8
+         trc_upflow_deferred = 0._r8
          trc_soil_evap = 0._r8
          top_exfil_water = 0._r8
          top_soil_evap_water = 0._r8
@@ -984,11 +1007,21 @@ CONTAINS
             ! the final ponding change; for the evaporation-deficit cases
             ! that dominate active ptype=0 residuals, rsur is zero and this
             ! identifies negative qgtop exactly.
-            qgtop_est = qinfl + (wdsrf - wdsrf_bef) / max(deltim, trc_tiny) &
-               + (late_runoff_water-flood_water-late_surface_water)/max(deltim,trc_tiny)
+            IF (present(qgtop_solver)) THEN
+               qgtop_est = qgtop_solver - flood_water/max(deltim,trc_tiny)
+            ELSE
+               qgtop_est = qinfl + (wdsrf - wdsrf_bef) / max(deltim, trc_tiny) &
+                  + (late_runoff_water-flood_water-late_surface_water)/max(deltim,trc_tiny)
+            ENDIF
 
             IF (eff_qseva > trc_tiny .and. qgtop_est < -trc_tiny) THEN
-               top_soil_evap_water = top_boundary_out_water
+               ! Only the qseva deficit leaves layer 1 as
+               ! evaporation. Negative qinfl can be far larger than qseva*deltim
+               ! (a saturated column exfiltrating to the surface); booking all of
+               ! it as evaporation removed up to ~24x the host's evaporated water
+               ! from the tracer pool. The rest is ordinary exfiltration.
+               top_soil_evap_water = min(top_boundary_out_water, eff_qseva * deltim)
+               top_exfil_water = top_boundary_out_water - top_soil_evap_water
                   kinetic_on_soil_surface = .true.
                   trc_soil_evap = atmospheric_loss_tracer(trc_wliq_soisno(itrc, 1, ipatch), &
                      max(water_shadow(1), 0._r8), top_soil_evap_water, layer_temp(1), .false.)
@@ -999,9 +1032,26 @@ CONTAINS
                water_shadow(1) = water_shadow(1) - top_soil_evap_water
             ELSE
                top_exfil_water = top_boundary_out_water
+            ENDIF
+            IF (top_exfil_water > 0._r8) THEN
                trc_soil_upflow = top_exfil_water * ratio_layer(1)
-               trc_soil_upflow = min(trc_soil_upflow, max(trc_wliq_soisno(itrc, 1, ipatch), 0._r8))
-               trc_wliq_soisno(itrc, 1, ipatch) = trc_wliq_soisno(itrc, 1, ipatch) - trc_soil_upflow
+               ! The host refills layer 1 from below within
+               ! the same Richards solve, so exfiltration can exceed what layer 1
+               ! holds before the qlayer transfers. Clamping here left the
+               ! missing upflow tracer in the soil. Send the full upflow to the
+               ! surface and let layer 1 pay the shortfall after section 2.
+               ! Nonvolatile solutes keep the original clamp: they carry real
+               ! gradients, and an unpaid deferral would create solute mass.
+               IF (tracer_is_nonvolatile_solute(itrc)) THEN
+                  trc_soil_upflow = min(trc_soil_upflow, max(trc_wliq_soisno(itrc, 1, ipatch), 0._r8))
+                  trc_wliq_soisno(itrc, 1, ipatch) = trc_wliq_soisno(itrc, 1, ipatch) - trc_soil_upflow
+               ELSEIF (trc_soil_upflow > max(trc_wliq_soisno(itrc, 1, ipatch), 0._r8)) THEN
+                  trc_upflow_deferred = trc_soil_upflow - max(trc_wliq_soisno(itrc, 1, ipatch), 0._r8)
+                  trc_wliq_soisno(itrc, 1, ipatch) = trc_wliq_soisno(itrc, 1, ipatch) &
+                     - max(trc_wliq_soisno(itrc, 1, ipatch), 0._r8)
+               ELSE
+                  trc_wliq_soisno(itrc, 1, ipatch) = trc_wliq_soisno(itrc, 1, ipatch) - trc_soil_upflow
+               ENDIF
                water_shadow(1) = water_shadow(1) - top_exfil_water
             ENDIF
          ENDIF
@@ -1088,9 +1138,16 @@ CONTAINS
                CALL tracer_book_evap_loss(itrc, ipatch, trc_soil_evap, imperv_subl_loss, &
                   TRC_EVAP_KIND_SUBL)
          ENDIF
+         ! Exfiltration joins the pool only after this
+         ! evaporation (see below), but surface_base_water is built from the
+         ! final wdsrf/rsur and already contains it. Leave it out of the
+         ! evaporating pool too, or the evaporated tracer is diluted.
+         evap_base_water = surface_base_water
+         IF (flood_water <= 0._r8 .and. top_exfil_water > 0._r8) &
+            evap_base_water = max(surface_base_water - top_exfil_water, 0._r8)
          IF (gwat_evap > trc_tiny .and. trc_pool_total > trc_tiny) THEN
             ! Reconstruct pre-evap water pool
-            water_pool_total = surface_base_water + gwat_evap
+            water_pool_total = evap_base_water + gwat_evap
                trc_gwat_evap = atmospheric_loss_tracer(trc_pool_total, water_pool_total, &
                   gwat_evap, layer_temp(1), .false.)
                trc_pool_total = trc_pool_total - trc_gwat_evap
@@ -1098,7 +1155,7 @@ CONTAINS
                   TRC_EVAP_KIND_SOILEVAP)
          ENDIF
          IF (imperv_wdsrf_loss > trc_tiny .and. trc_pool_total > trc_tiny) THEN
-            water_pool_total = surface_base_water + imperv_wdsrf_loss
+            water_pool_total = evap_base_water + imperv_wdsrf_loss
                trc_gwat_evap = atmospheric_loss_tracer(trc_pool_total, water_pool_total, &
                   imperv_wdsrf_loss, layer_temp(1), .false.)
                trc_pool_total = trc_pool_total - trc_gwat_evap
@@ -1211,8 +1268,11 @@ CONTAINS
             ! runoff. VSF may pond part of it, so mix at that late boundary
             ! and partition by the solver's actual wdsrf/qinfl outputs.
             late_tracer = trc_pool_total + trc_soil_upflow
-            IF (present(flood_tracer_input)) late_tracer = late_tracer + &
-               flood_tracer_input(itrc) - flood_ground_evap_tracer
+            late_scale = abs(trc_pool_total) + abs(trc_soil_upflow)
+            IF (present(flood_tracer_input)) THEN
+               late_tracer = late_tracer + flood_tracer_input(itrc) - flood_ground_evap_tracer
+               late_scale = late_scale + abs(flood_tracer_input(itrc)) + abs(flood_ground_evap_tracer)
+            ENDIF
             ! Directly reconstruct the carrier after ordinary runoff and
             ! before post-solver frost/dew.  The pre-flood ordinary balance
             ! may be negative when flood water first pays soil evaporation.
@@ -1237,8 +1297,12 @@ CONTAINS
             ELSE
                IF (tracer_is_nonvolatile_solute(itrc)) THEN
                   trc_surface_residue(itrc,ipatch) = trc_surface_residue(itrc,ipatch) + max(late_tracer,0._r8)
-               ELSEIF (late_tracer > trc_tiny) THEN
+               ELSEIF (late_tracer > max(trc_tiny, 1.e-10_r8*late_scale, trc_water_min_for_ratio * &
+                       tracers(itrc)%ref_ratio*(1._r8 + trc_delta_sanity_max/1000._r8))) THEN
                   CALL CoLM_stop('grid flood tracer: unresolved dry isotope surface pool')
+               ELSEIF (late_tracer > 0._r8 .and. allocated(trc_numerical_residual_step)) THEN
+                  trc_numerical_residual_step(itrc, ipatch) = &
+                     trc_numerical_residual_step(itrc, ipatch) - late_tracer
                ENDIF
                late_ratio = 0._r8
                late_tracer = 0._r8
@@ -1285,12 +1349,56 @@ CONTAINS
          DO j = 1, nl_soil
             layer_transport_ratio(j) = current_liq_ratio(j)
          ENDDO
+         ! The faces are applied top-down, but a layer
+         ! that donates upward is refilled from below in the same solve.
+         ! Clamping each flux to the donor's current stock left tracer behind
+         ! whenever water moved through several layers in one step. First try
+         ! the faces unclamped with the snapshot ratios (identical arithmetic
+         ! whenever no clamp binds); fall back to the clamped sweep only if a
+         ! layer would end negative by more than rounding of what passed it.
+         ! A layer that passes on more water than it holds at the snapshot is
+         ! refilled by its supplier within the step; its stock alone cannot
+         ! give the outgoing ratio (with a near-empty stock it is just noise).
+         ! Mix stock and inflow instead, following the flow direction. The old
+         ! clamped sweep always truncated such a flux, so no other step changes.
+         IF (.not. tracer_is_nonvolatile_solute(itrc)) THEN
+            DO j = nl_soil - 1, 2, -1
+               IF (qlayer(j) < -trc_tiny .and. qlayer(j-1) < -trc_tiny) THEN
+                  IF (abs(qlayer(j-1)) * deltim > water_shadow(j)) THEN
+                     layer_transport_ratio(j) = (max(trc_wliq_soisno(itrc, j, ipatch), 0._r8) &
+                        + abs(qlayer(j)) * deltim * layer_transport_ratio(j+1)) &
+                        / (max(water_shadow(j), 0._r8) + abs(qlayer(j)) * deltim)
+                  ENDIF
+               ENDIF
+            ENDDO
+            DO j = 2, nl_soil - 1
+               IF (qlayer(j-1) > trc_tiny .and. qlayer(j) > trc_tiny) THEN
+                  IF (qlayer(j) * deltim > water_shadow(j)) THEN
+                     layer_transport_ratio(j) = (max(trc_wliq_soisno(itrc, j, ipatch), 0._r8) &
+                        + qlayer(j-1) * deltim * layer_transport_ratio(j-1)) &
+                        / (max(water_shadow(j), 0._r8) + qlayer(j-1) * deltim)
+                  ENDIF
+               ENDIF
+            ENDDO
+         ENDIF
+         trc_wliq_qlayer_bef(1:nl_soil) = trc_wliq_soisno(itrc, 1:nl_soil, ipatch)
+         water_shadow_qlayer_bef(1:nl_soil) = water_shadow(1:nl_soil)
+         ! Nonvolatile solutes go straight to the original clamped sweep.
+         DO qlayer_pass = merge(2, 1, tracer_is_nonvolatile_solute(itrc)), 2
+            qlayer_clamp = qlayer_pass == 2
+            IF (qlayer_clamp) THEN
+               trc_wliq_soisno(itrc, 1:nl_soil, ipatch) = trc_wliq_qlayer_bef(1:nl_soil)
+               water_shadow(1:nl_soil) = water_shadow_qlayer_bef(1:nl_soil)
+            ENDIF
+            qlayer_through(1:nl_soil) = abs(trc_wliq_qlayer_bef(1:nl_soil))
          DO j = 1, nl_soil - 1
             IF (qlayer(j) > trc_tiny) THEN
                ! Downward: j → j+1
                ratio_src = layer_transport_ratio(j)
                trc_flux = qlayer(j) * ratio_src * deltim
-                  trc_flux = min(trc_flux, max(trc_wliq_soisno(itrc, j, ipatch), 0._r8))
+                  IF (qlayer_clamp) trc_flux = min(trc_flux, max(trc_wliq_soisno(itrc, j, ipatch), 0._r8))
+                  qlayer_through(j) = qlayer_through(j) + abs(trc_flux)
+                  qlayer_through(j+1) = qlayer_through(j+1) + abs(trc_flux)
                   trc_wliq_soisno(itrc, j,   ipatch) = trc_wliq_soisno(itrc, j,   ipatch) - trc_flux
                   trc_wliq_soisno(itrc, j+1, ipatch) = trc_wliq_soisno(itrc, j+1, ipatch) + trc_flux
                   water_shadow(j)   = water_shadow(j)   - qlayer(j) * deltim
@@ -1299,13 +1407,49 @@ CONTAINS
                   ! Upward: j+1 → j
                   ratio_src = layer_transport_ratio(j+1)
                   trc_flux = abs(qlayer(j)) * ratio_src * deltim
-                  trc_flux = min(trc_flux, max(trc_wliq_soisno(itrc, j+1, ipatch), 0._r8))
+                  IF (qlayer_clamp) trc_flux = min(trc_flux, max(trc_wliq_soisno(itrc, j+1, ipatch), 0._r8))
+                  qlayer_through(j) = qlayer_through(j) + abs(trc_flux)
+                  qlayer_through(j+1) = qlayer_through(j+1) + abs(trc_flux)
                   trc_wliq_soisno(itrc, j+1, ipatch) = trc_wliq_soisno(itrc, j+1, ipatch) - trc_flux
                   trc_wliq_soisno(itrc, j,   ipatch) = trc_wliq_soisno(itrc, j,   ipatch) + trc_flux
                   water_shadow(j+1) = water_shadow(j+1) + qlayer(j) * deltim
                   water_shadow(j)   = water_shadow(j)   - qlayer(j) * deltim
                ENDIF
             ENDDO
+            IF (qlayer_clamp) EXIT
+            IF (all(trc_wliq_soisno(itrc, 1:nl_soil, ipatch) >= -1.e-12_r8 * qlayer_through(1:nl_soil) &
+                    .or. trc_wliq_soisno(itrc, 1:nl_soil, ipatch) >= trc_wliq_qlayer_bef(1:nl_soil))) THEN
+               ! Rounding dust left by the unclamped sweep: zero it as an
+               ! explicit numerical source so no negative stock survives.
+               DO j = 1, nl_soil
+                  IF (trc_wliq_soisno(itrc, j, ipatch) < 0._r8 .and. &
+                      trc_wliq_qlayer_bef(j) >= 0._r8) THEN
+                     IF (allocated(trc_numerical_residual_step)) &
+                        trc_numerical_residual_step(itrc, ipatch) = &
+                           trc_numerical_residual_step(itrc, ipatch) - trc_wliq_soisno(itrc, j, ipatch)
+                     trc_wliq_soisno(itrc, j, ipatch) = 0._r8
+                  ENDIF
+               ENDDO
+               EXIT
+            ENDIF
+         ENDDO
+
+         ! Layer 1 now holds the water that reached it
+         ! from below; it pays the deferred exfiltration tracer. Anything it
+         ! still cannot cover is an explicit numerical source.
+         IF (trc_upflow_deferred > 0._r8) THEN
+            trc_flux = min(trc_upflow_deferred, max(trc_wliq_soisno(itrc, 1, ipatch), 0._r8))
+            trc_wliq_soisno(itrc, 1, ipatch) = trc_wliq_soisno(itrc, 1, ipatch) - trc_flux
+            IF (trc_upflow_deferred - trc_flux > 0._r8) THEN
+               IF (allocated(trc_numerical_residual_step)) THEN
+                  trc_numerical_residual_step(itrc, ipatch) = &
+                     trc_numerical_residual_step(itrc, ipatch) + (trc_upflow_deferred - trc_flux)
+               ELSE
+                  trc_wliq_soisno(itrc, 1, ipatch) = trc_wliq_soisno(itrc, 1, ipatch) &
+                     - (trc_upflow_deferred - trc_flux)
+               ENDIF
+            ENDIF
+         ENDIF
 
          ! --- liquid-phase molecular diffusion between soil layers ---
          ! Internal, equal-and-opposite exchange: it moves no water and no
@@ -1499,6 +1643,19 @@ CONTAINS
          ENDIF
          CALL tracer_equilibrate_dissolved(itrc, wa, trc_wa(itrc, ipatch), &
             trc_subsurface_solid(itrc, ipatch))
+         IF (tracer_is_isotope(itrc)) THEN
+            IF (.not. tracer_aquifer_isotope_state_valid(wa, trc_wa(itrc, ipatch), &
+                  tracers(itrc)%ref_ratio, aquifer_ref_water, aquifer_ref_mass)) THEN
+               aquifer_orphan_mass = tracer_aquifer_actual_mass(trc_wa(itrc, ipatch), aquifer_ref_mass)
+               IF (tracer_aquifer_actual_water(wa, aquifer_ref_water) < -trc_water_min_for_ratio) &
+                  aquifer_orphan_mass = aquifer_orphan_mass - &
+                     tracer_aquifer_actual_water(wa, aquifer_ref_water) * aquifer_ratio
+               trc_wa(itrc, ipatch) = trc_wa(itrc, ipatch) - aquifer_orphan_mass
+               IF (allocated(trc_numerical_residual_step)) &
+                  trc_numerical_residual_step(itrc, ipatch) = &
+                     trc_numerical_residual_step(itrc, ipatch) - aquifer_orphan_mass
+            ENDIF
+         ENDIF
          CALL check_isotope_aquifer(itrc, ipatch, wa, trc_wa(itrc, ipatch), 'after qcharge')
 
          ! ============================================================
@@ -1542,6 +1699,7 @@ CONTAINS
                trc_flux = dew_surface_water*deposition_ratio_for(layer_temp(1), .false.)
                pending_surface_tracer = pending_surface_tracer + trc_flux
                a_trc_precip(itrc,ipatch) = a_trc_precip(itrc,ipatch) + trc_flux
+               a_water_precip(itrc,ipatch) = a_water_precip(itrc,ipatch) + dew_surface_water
             ENDIF
             late_water = max(wdsrf,0._r8) + late_runoff_water
             late_surface_ratio = 0._r8
@@ -1575,6 +1733,7 @@ CONTAINS
                trc_flux = eff_qsdew_topliq * deposition_ratio_for(layer_temp(1), .false.) * deltim
                trc_wliq_soisno(itrc, 1, ipatch) = trc_wliq_soisno(itrc, 1, ipatch) + trc_flux
                a_trc_precip(itrc, ipatch) = a_trc_precip(itrc, ipatch) + trc_flux
+               a_water_precip(itrc, ipatch) = a_water_precip(itrc, ipatch) + eff_qsdew_topliq * deltim
                water_shadow(1) = water_shadow(1) + eff_qsdew_topliq * deltim
             ENDIF
 
@@ -1607,19 +1766,13 @@ CONTAINS
             trc_flux = eff_qfros_top * deposition_ratio_for(layer_temp(1), .true.) * deltim
             trc_wice_soisno(itrc, 1, ipatch) = trc_wice_soisno(itrc, 1, ipatch) + trc_flux
             a_trc_precip(itrc, ipatch) = a_trc_precip(itrc, ipatch) + trc_flux
+            a_water_precip(itrc, ipatch) = a_water_precip(itrc, ipatch) + eff_qfros_top * deltim
          ENDIF
          IF (eff_qsubl_top > trc_tiny) THEN
             ! trc_wice was just updated by frost above, so the right
             ! denominator is the post-frost ice pool, not wice_soisno_bef(1).
             wice_pre_phase = max(wice_soil1_after_imperv + max(eff_qfros_top, 0._r8) * deltim, 0._r8)
             subl_water = eff_qsubl_top * deltim
-            ! Mirror the snow-top deficit path. Water side
-            ! (MOD_SoilSnowHydrology.F90:1101) clamps wice at 0 when
-            ! qsubl*dt > wice_bef+qfros*dt and charges the excess
-            ! against wliq. Previously the tracer side only min()'d
-            ! against trc_wice, so the deficit vapour carried away no
-            ! tracer and a_trc_evap was systematically short in
-            ! sublimation-heavy patches.
             IF (wice_pre_phase - subl_water > trc_water_min_for_ratio) THEN
                ! Normal case: ice covers sublimation.
                   trc_flux = atmospheric_loss_tracer(trc_wice_soisno(itrc, 1, ipatch), &
@@ -1628,21 +1781,9 @@ CONTAINS
                   CALL tracer_book_evap_loss(itrc, ipatch, trc_flux, subl_water, &
                      TRC_EVAP_KIND_SUBL)
             ELSEIF (subl_water > trc_tiny) THEN
-               ! Deficit: drain ice completely, then pull the remainder
-               ! from liquid at pre-WATER wliq ratio (ratio_layer(1) was
-               ! cached at the top of the step before any layer-1 mutation).
                   CALL exhaust_surface_phase(itrc, ipatch, &
                      trc_wice_soisno(itrc, 1, ipatch), &
                      min(subl_water, max(wice_pre_phase, 0._r8)), TRC_EVAP_KIND_SUBL)
-               deficit_water = subl_water - max(wice_pre_phase, 0._r8)
-                  IF (deficit_water > trc_tiny .and. wliq_soisno_bef(1) > trc_tiny) THEN
-                        trc_flux = atmospheric_loss_tracer(trc_wliq_soisno(itrc, 1, ipatch), &
-                           max(water_shadow(1), 0._r8), deficit_water, layer_temp(1), .false.)
-                        trc_wliq_soisno(itrc, 1, ipatch) = trc_wliq_soisno(itrc, 1, ipatch) - trc_flux
-                        CALL tracer_book_evap_loss(itrc, ipatch, trc_flux, deficit_water, &
-                           TRC_EVAP_KIND_SUBL)
-                     water_shadow(1) = water_shadow(1) - deficit_water
-                  ENDIF
                ENDIF
             ENDIF
 
@@ -1765,6 +1906,7 @@ CONTAINS
                water_resid = wliq_soisno(j) - water_shadow(j)
                IF (abs(water_resid) > trc_tiny) THEN
                   water_shadow_ratio = current_liq_ratio(j)
+                  soil_resid_water = soil_resid_water + water_resid
                   IF (water_resid >= 0._r8) THEN
                      trc_flux = water_resid * water_shadow_ratio
                      trc_wliq_soisno(itrc, j, ipatch) = trc_wliq_soisno(itrc, j, ipatch) + trc_flux
@@ -1785,6 +1927,8 @@ CONTAINS
                      IF (allocated(trc_numerical_residual_step)) THEN
                         trc_numerical_residual_step(itrc, ipatch) = &
                            trc_numerical_residual_step(itrc, ipatch) + soil_resid_trc
+                        trc_numerical_water_step(itrc, ipatch) = &
+                           trc_numerical_water_step(itrc, ipatch) + soil_resid_water
                      ELSE
                         trc_wa(itrc, ipatch) = trc_wa(itrc, ipatch) - soil_resid_trc
                      ENDIF
@@ -2271,6 +2415,7 @@ CONTAINS
             trc_wice_soisno(itrc, lb_snow, ipatch) = &
                trc_wice_soisno(itrc, lb_snow, ipatch) + trc_flux
             a_trc_precip(itrc, ipatch) = a_trc_precip(itrc, ipatch) + trc_flux
+            a_water_precip(itrc, ipatch) = a_water_precip(itrc, ipatch) + max(eff_qfros_snow, 0._r8) * deltim
 
             water_ice_pool = wice_soisno_bef(lb_snow) + max(eff_qfros_snow, 0._r8) * deltim
             water_ice_pool_prefrost = water_ice_pool
@@ -2315,6 +2460,7 @@ CONTAINS
             trc_wliq_soisno(itrc, lb_snow, ipatch) = &
                trc_wliq_soisno(itrc, lb_snow, ipatch) + trc_flux
             a_trc_precip(itrc, ipatch) = a_trc_precip(itrc, ipatch) + trc_flux
+            a_water_precip(itrc, ipatch) = a_water_precip(itrc, ipatch) + max(eff_qsdew_snow, 0._r8) * deltim
 
             IF (eff_qseva_snow > trc_tiny) THEN
                IF (split_soilsnow) THEN
@@ -2343,6 +2489,7 @@ CONTAINS
                         min(evap_water, max(water_liq_pool, 0._r8)), TRC_EVAP_KIND_SOILEVAP)
                   deficit_water = evap_water - max(water_liq_pool, 0._r8)
                   IF (deficit_water > trc_tiny .and. water_ice_pool > trc_tiny) THEN
+                        deficit_water = min(deficit_water, water_ice_pool)
                         trc_flux = atmospheric_loss_tracer(trc_wice_soisno(itrc, lb_snow, ipatch), &
                            water_ice_pool, deficit_water, layer_temp(lb_snow), .true.)
                         trc_wice_soisno(itrc, lb_snow, ipatch) = &
@@ -2648,6 +2795,7 @@ CONTAINS
             trc_frost_input = q_frost_in * deposition_ratio_for(layer_temp(1), .true.)
             pool_tracer = pool_tracer + trc_dew_input + trc_frost_input
             a_trc_precip(itrc, ipatch) = a_trc_precip(itrc, ipatch) + trc_dew_input + trc_frost_input
+            a_water_precip(itrc, ipatch) = a_water_precip(itrc, ipatch) + q_dew_in + q_frost_in
          ENDIF
 
          IF (tracer_is_nonvolatile_solute(itrc) .and. &
