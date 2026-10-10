@@ -2,7 +2,7 @@
 #BSUB -J Amazon_sed_0p25
 #BSUB -q normal
 #BSUB -e logs/Amazon_sed_0p25-e.out
-#BSUB -n 240
+#BSUB -n 480
 #BSUB -R rusage[mem=150G]
 #BSUB -R "span[ptile=48]"
 
@@ -13,8 +13,8 @@ export OMP_NUM_THREADS=1
 export HDF5_USE_FILE_LOCKING=FALSE
 ulimit -s unlimited
 
-NML="/share/home/dq134/wzx/CoLM/CoLM_0914/run/Amazon_sediment_0p25.nml"
-cd /share/home/dq134/wzx/CoLM/CoLM_0914/run/
+NML="/share/home/dq134/wzx/CoLM/CoLM202X_sed/run/Amazon_0p25.nml"
+cd /share/home/dq134/wzx/CoLM/CoLM202X_sed/run/
 MPI=/share/home/dq089/soft/mpich-4.2.3-intel/bin/mpirun
 
 mkdir -p logs
@@ -22,12 +22,25 @@ mkdir -p logs
   echo "job start: $(date)"
   echo "host: $(hostname)"
   echo "mpirun: $MPI"
+
+  echo "========================================"
+  echo "Git version"
+  echo "========================================"
+  echo "branch: $(git branch --show-current)"
+  echo "commit: $(git rev-parse HEAD)"
+  echo "latest commit:"
+  git log -1 --pretty="format:%h | %ad | %an | %s" --date=iso
+  echo
+  echo "git status:"
+  git status --short
+  echo "========================================"
+
   ldd ./colm.x | egrep 'libnetcdf|libnetcdff|libhdf5|libmpi|libmpifort|libiomp5|libifcore|not found' || true
 } > logs/Amazon_sed_0p25_env.txt
 
 #"$MPI" -np 240 ./mksrfdata.x "${NML}" > logs/Amazon_sed_0p25_srf.txt 2>&1
 #"$MPI" -np 240 ./mkinidata.x "${NML}" > logs/Amazon_sed_0p25_ini.txt 2>&1
-"$MPI" -np 240 ./colm.x "${NML}" > logs/Amazon_ctl_colm.txt 2>&1
+"$MPI" -np 480 ./colm.x "${NML}" > logs/Amazon_0p25_colm_0921.txt 2>&1
 
 
 

@@ -112,14 +112,14 @@
 
    ! Use an independent parameter file for tuning instead of modifying
    ! standard_sediment_parameter.nml directly.
-   DEF_TRACER_PARAM_FILES = 'SEDIMENT:/share/home/dq134/wzx/CoLM/CoLM_0914/run/standard_sediment_parameter.nml'
+   DEF_TRACER_PARAM_FILES = 'SEDIMENT:/share/home/dq134/wzx/CoLM/CoLM202X_sed/run/sediment_parameter.nml'
 
 
    ! -------------------------------------------------------------------
    ! 10. Atmospheric forcing
    ! -------------------------------------------------------------------
 
-   DEF_forcing_namelist = '/share/home/dq134/wzx/CoLM/CoLM_0914/run/forcing/JRA3Q.nml'
+   DEF_forcing_namelist = '/share/home/dq134/wzx/CoLM/CoLM202X_sed/run/forcing/JRA3Q.nml'
 
 
    ! -------------------------------------------------------------------

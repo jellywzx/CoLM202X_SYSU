@@ -1,0 +1,10 @@
+{
+    "source_dirs": [
+        "main",
+    ],
+    "include_dirs": [
+        "include"
+    ],
+    "pp_defs": [
+    ]
+}
