@@ -1,5 +1,7 @@
 """Sediment push-map validation remains collective, even without CFL reductions."""
 
+from fortran_test_support import sediment_process_diagnostic_stubs
+
 from pathlib import Path
 import os
 import re
@@ -172,14 +174,15 @@ module sediment_probe
   print *, message
   call MPI_Abort(MPI_COMM_WORLD,99,ierr)
  end subroutine
- subroutine assert_sediment_mass_balance(name,i,before,after,source)
+ subroutine assert_sediment_mass_balance(name,i,before,after,source,rivsto_i,rivout_i)
   character(len=*),intent(in) :: name
   integer,intent(in) :: i
   real(r8),intent(in) :: before,after,source
+  real(r8),optional,intent(in) :: rivsto_i,rivout_i
   if (abs(after-before-source)>1.e-10_r8+1.e-10_r8*max(abs(before),abs(after),abs(source))) &
    call CoLM_stop('local mass mismatch')
  end subroutine
-""" + bodies + """
+""" + bodies + sediment_process_diagnostic_stubs() + """
 end module
 program main
  use mpi

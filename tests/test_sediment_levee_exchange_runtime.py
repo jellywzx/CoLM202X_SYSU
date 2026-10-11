@@ -1,5 +1,7 @@
 """Compile the production levee transfer kernel with tiny module stubs."""
 
+from fortran_test_support import sediment_process_diagnostic_stubs
+
 from pathlib import Path
 import subprocess
 
@@ -38,7 +40,7 @@ module probe
   real(r8), intent(in) :: before,after,expected_change
   if (abs(after-before-expected_change)>1.e-12_r8) error stop 'class budget'
  end subroutine
-""" + kernel + """
+""" + kernel + sediment_process_diagnostic_stubs() + """
 end module
 program main
  use probe

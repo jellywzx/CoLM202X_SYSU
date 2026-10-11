@@ -1,5 +1,7 @@
 """Compile the shipped sediment branches that used to fail on dry/empty workers."""
 
+from fortran_test_support import sediment_process_diagnostic_stubs
+
 from pathlib import Path
 import re
 import subprocess
@@ -96,7 +98,7 @@ module sediment_probe
  implicit none
  integer :: nsed=1
  logical :: p_is_worker=.true.
- real(r8) :: lambda=0.4_r8, sed_ignore_dph=0._r8
+ real(r8) :: lambda=0.4_r8, sed_ignore_dph=0._r8, sed_max_conc=0.01_r8
  real(r8), parameter :: MAX_SED_CONC=0.01_r8, EXCH_SHEARVEL_MIN=1.e-4_r8
  real(r8), parameter :: EXCH_SHEARVEL_BLEND=2.e-4_r8, EXCH_ZD_MAX=100._r8
  real(r8) :: vonKar=0.4_r8
@@ -105,13 +107,14 @@ module sediment_probe
  real(r8) :: exch_d_raw(1,1), exch_es_raw(1,1), susvel(1,1)
  real(r8) :: setvel(1), shearvel(1)
  contains
- subroutine assert_sediment_mass_balance(name,i,before,after,source)
+ subroutine assert_sediment_mass_balance(name,i,before,after,source,rivsto_i,rivout_i)
   character(len=*), intent(in) :: name
   integer, intent(in) :: i
   real(r8), intent(in) :: before,after,source
+  real(r8), optional, intent(in) :: rivsto_i,rivout_i
   if (abs(after-before-source)>1.e-12_r8) error stop 9
  end subroutine
-""" + routine(source, "calc_sediment_exchange") + "\n" + routine(source, "apply_sediment_input") + """
+""" + routine(source, "calc_sediment_exchange") + "\n" + routine(source, "apply_sediment_input") + sediment_process_diagnostic_stubs() + """
 end module
 program probe
  use sediment_probe
@@ -242,13 +245,14 @@ module sediment_probe
   print *, message
   error stop 99
  end subroutine
- subroutine assert_sediment_mass_balance(name,i,before,after,source)
+ subroutine assert_sediment_mass_balance(name,i,before,after,source,rivsto_i,rivout_i)
   character(len=*), intent(in) :: name
   integer, intent(in) :: i
   real(r8), intent(in) :: before,after,source
+  real(r8), optional, intent(in) :: rivsto_i,rivout_i
   if (abs(after-before-source)>1.e-10_r8) error stop 9
  end subroutine
-""" + bodies + """
+""" + bodies + sediment_process_diagnostic_stubs() + """
 end module
 program probe
  use sediment_probe

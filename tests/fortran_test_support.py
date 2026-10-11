@@ -87,3 +87,23 @@ def require_runnable_fortran_compiler(workdir: Path) -> str:
     if ran.stdout.strip() != "FORTRAN_OK":
         pytest.fail("Fortran compiler smoke test returned unexpected output")
     return compiler
+
+
+def sediment_process_diagnostic_stubs() -> str:
+    """No-op history dependencies for isolated physics probes.
+
+    The real recorder, averaging and NetCDF restart paths are compiled and
+    checked by test_sediment_process_history; these probes retain their
+    original focus on transport and class mass conservation.
+    """
+    return """
+ subroutine record_sediment_precap(i,solid_volume,water_volume)
+  integer,intent(in) :: i
+  real(r8),intent(in) :: solid_volume(:),water_volume
+ end subroutine
+ subroutine record_sediment_cap_deposition(i,stage,solid_volume)
+  integer,intent(in) :: i
+  character(*),intent(in) :: stage
+  real(r8),intent(in) :: solid_volume(:)
+ end subroutine
+"""

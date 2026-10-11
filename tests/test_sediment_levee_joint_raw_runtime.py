@@ -1,5 +1,7 @@
 """Gross levee demand must compete with ordinary faces before clipping."""
 
+from fortran_test_support import sediment_process_diagnostic_stubs
+
 from pathlib import Path
 import subprocess
 
@@ -51,7 +53,7 @@ module probe
   integer :: i
 """ + demand + r"""
  end subroutine
-""" + scale + transfer + r"""
+""" + scale + transfer + sediment_process_diagnostic_stubs() + r"""
 end module
 program main
  use probe

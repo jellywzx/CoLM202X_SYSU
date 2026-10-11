@@ -1,5 +1,7 @@
 """Exercise the production morphology BIF kernel with cross-rank path maps."""
 
+from fortran_test_support import sediment_process_diagnostic_stubs
+
 from pathlib import Path
 import os
 import shutil
@@ -110,7 +112,7 @@ module probe
   real(r8), intent(in) :: before,after,expected_change
   if (abs(after-before-expected_change)>1.e-10_r8) call CoLM_stop('MPI BIF class budget')
  end subroutine
-""" + kernels + r"""
+""" + kernels + sediment_process_diagnostic_stubs() + r"""
 end module
 program main
  use probe
