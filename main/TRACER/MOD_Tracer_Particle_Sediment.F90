@@ -76,6 +76,7 @@ MODULE MOD_Tracer_Particle_Sediment
    real(r8), parameter :: SED_DEFAULT_CFL_ADV = 0.5_r8
    real(r8), parameter :: SED_DEFAULT_IGNORE_DPH = 0.05_r8
    real(r8), parameter :: SED_DEFAULT_DT_MAX = 3600._r8
+   real(r8), parameter :: SED_DEFAULT_MAX_CONC = 0.01_r8
    ! cfl_adv remains in the parameter/restart contract for compatibility, but
    ! advection now uses a donor-inventory limiter once per morphology interval.
 
@@ -94,7 +95,7 @@ MODULE MOD_Tracer_Particle_Sediment
    real(r8), parameter :: SED_DEFAULT_PYLDPC = 2.0_r8
    real(r8), parameter :: SED_DEFAULT_DSYLUNIT = 1.0e-6_r8
 
-   real(r8), parameter :: MAX_SED_CONC = 0.01_r8 ! Maximum suspended sediment concentration [m3/m3]
+   real(r8), parameter :: MAX_SED_CONC = SED_DEFAULT_MAX_CONC ! Maximum suspended sediment concentration [m3/m3]
    real(r8), parameter :: SED_BEDLOAD_COEFF = 17._r8
    real(r8), parameter :: SED_PRECIP_THRESHOLD_MM_DAY = 10._r8 ! Min rain rate of a forcing step for hillslope yield [mm/day]
    real(r8), parameter :: EXCH_SHEARVEL_MIN = 1.e-4_r8
@@ -789,7 +790,7 @@ CONTAINS
    USE MOD_Grid_RiverLakeNetwork, only: numucat, topo_rivwth, topo_rivlen, &
       topo_rivman, topo_area, ucat_ucid, rivsys_by_multiple_procs
 #ifdef CoLMDEBUG
-   USE MOD_Grid_RiverLakeNetwork, only: x_ucat, y_ucat
+   USE MOD_Grid_RiverLakeNetwork, only: x_ucat, y_ucat, griducat
 #endif
 #ifdef USEMPI
    USE MOD_Grid_RiverLakeNetwork, only: p_comm_rivsys, push_next2ucat, push_ups2ucat
@@ -839,6 +840,7 @@ CONTAINS
    real(r8) :: sum_inst_near_dry_abs_q_local
    real(r8) :: sum_period_near_dry_abs_q_local, sum_period_near_dry_signed_q_local
    real(r8) :: precip_diag_global(3), diag_max_global(11), diag_sum_global(17)
+   real(r8) :: carrier_filter_diag_global(3)
    integer  :: n_wet_local, n_shallow_local, n_source_local
    integer  :: n_susp_local, n_bed_local
    integer  :: n_exchange_pos_local, n_exchange_neg_local
