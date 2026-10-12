@@ -94,7 +94,6 @@ MODULE MOD_Tracer_Particle_Sediment
    real(r8), parameter :: SED_DEFAULT_PYLDC = 2.0_r8
    real(r8), parameter :: SED_DEFAULT_PYLDPC = 2.0_r8
    real(r8), parameter :: SED_DEFAULT_DSYLUNIT = 1.0e-6_r8
-   real(r8), parameter :: SED_DEFAULT_MAX_CONC = 0.01_r8 ! Default suspended solid volume fraction
 
    real(r8), parameter :: MAX_SED_CONC = SED_DEFAULT_MAX_CONC ! Maximum suspended sediment concentration [m3/m3]
    real(r8), parameter :: SED_BEDLOAD_COEFF = 17._r8
