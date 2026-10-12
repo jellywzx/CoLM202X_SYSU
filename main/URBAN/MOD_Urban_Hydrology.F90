@@ -88,6 +88,7 @@ CONTAINS
    USE MOD_Const_Physical, only: denice, denh2o, tfrz
    USE MOD_SoilSnowHydrology
    USE MOD_Lake
+   USE MOD_Vars_TimeInvariants, only: topoweti, alp_twi, chi_twi, mu_twi
 
    IMPLICIT NONE
 
@@ -256,20 +257,6 @@ CONTAINS
 
    real(r8) :: a, aa, xs1
 
-#ifdef TRACER
-   ! WATER_2014 exposes resolved soil/snow water-diagnostic outputs in TRACER
-   ! builds. Full urban TRACER is still intentionally unsupported (guarded in
-   ! CoLMDRIVER) and UrbanHydrology does not call tracer_soil_water; these local
-   ! buffers only satisfy WATER_2014's explicit interface while preserving the
-   ! existing urban water calculation.
-   real(r8) :: qlayer_urb(0:nl_soil)
-   real(r8) :: etroot_trc_urb(1:nl_soil)
-   real(r8) :: etroot_actual_trc_urb(1:nl_soil)
-   real(r8) :: etroot_aquifer_trc_urb
-   real(r8) :: dew_overflow_urb, frost_displaced_urb, late_runoff_urb
-   real(r8) :: snow_qout_layer_urb(min(lbp, 0):0)
-#endif
-
 !-----------------------------------------------------------------------
 
       fg = 1 - froof
@@ -297,11 +284,6 @@ CONTAINS
              0.          ,& ! fsno, not active
              rsur_gper   ,rnof_gper   ,qinfl       ,pondmx      ,ssi         ,&
              wimp        ,smpmin      ,zwt         ,wdsrf       ,wa          ,qcharge     ,&
-#ifdef TRACER
-             qlayer_urb  ,etroot_trc_urb ,etroot_actual_trc_urb ,&
-             etroot_aquifer_trc_urb ,dew_overflow_urb,frost_displaced_urb,late_runoff_urb ,&
-             snow_qout_layer_urb                                             ,&
-#endif
 #if (defined CaMa_Flood) || (defined GridRiverLakeFlow)
              flddepth    ,fldfrc      ,qinfl_fld                             ,&
 #endif
@@ -310,7 +292,10 @@ CONTAINS
              mss_bcpho   ,mss_bcphi   ,mss_ocpho   ,mss_ocphi                ,&
              mss_dst1    ,mss_dst2    ,mss_dst3    ,mss_dst4                 ,&
 !  irrigation variables
-             qflx_irrig_drip   ,qflx_irrig_flood  ,qflx_irrig_paddy            )
+             qflx_irrig_drip   ,qflx_irrig_flood  ,qflx_irrig_paddy            ,&
+!  TOPMODEL topographic index statistics of this patch (methods 1/2)
+             topoweti=topoweti(ipatch), alp_twi=alp_twi(ipatch), &
+             chi_twi=chi_twi(ipatch), mu_twi=mu_twi(ipatch))
 
 !=======================================================================
 ! [2] for roof and impervious road
