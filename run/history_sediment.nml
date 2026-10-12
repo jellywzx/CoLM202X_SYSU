@@ -51,4 +51,8 @@
    ! Shear velocity
    DEF_hist_vars%shearvel   = .true.
 
+   ! Size-class exchange/cap-deposition fluxes and solid inventories;
+   ! f_ssc_precap_max is the maximum over this history window, in mg L-1.
+   DEF_hist_vars%seddiag    = .true.
+
 /

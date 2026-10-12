@@ -217,6 +217,9 @@ $CROP
 ! 8. If defined, open Land use and land cover change mode.
 #undef LULCC
 
+! Retain optional extended interception support.
+#define extend_interception
+
 $TRACER
 #if (defined TRACER) && (defined Campbell_SOIL_MODEL)
 #error "TRACER requires vanGenuchten_Mualem_SOIL_MODEL"

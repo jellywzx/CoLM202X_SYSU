@@ -309,6 +309,61 @@ dry hillslope input placed directly on the bed. The last path is an **external
 hillslope source**, not suspended-water settling; it is included so the reported
 effective bed increment closes against the actual layer change.
 
+#### Sediment process history diagnostics
+
+Enable the diagnostic group in the file referenced by `DEF_HIST_vars_namelist`:
+
+```fortran
+&nl_colm_history
+   DEF_hist_vars%seddiag = .true.
+/
+```
+
+`run/history_sediment.nml` enables this group. When
+`DEF_HIST_vars_out_default = .false.`, an older custom history namelist needs
+the explicit `seddiag` entry above. Rebuild CoLM after updating the source.
+The variables follow the configured history frequency and are written through
+the same unit-catchment dispatcher in both `one` and `block` modes.
+
+| Variables (`k = 1..nsed`) | Units | Definition |
+| --- | --- | --- |
+| `f_es_raw_k` | m3/s solid | Entrainment formula before net bed-inventory limiting. |
+| `f_d_raw_k` | m3/s solid | Physical settling, already limited by available suspended inventory / dt. |
+| `f_es_eff_k` | m3/s solid | Gross entrainment consistent with the inventory-limited net exchange. |
+| `f_d_eff_k` | m3/s solid | Effective deposition, including caps, dry-carrier deposits, protected settling and direct shallow hillslope input. |
+| `f_capdep_adv_k` | m3/s solid | Sum of the actual start/end advection cap transfers for positive water carriers. |
+| `f_capdep_exch_k` | m3/s solid | Concentration-cap deposition after bed-water exchange. |
+| `f_capdep_hill_k` | m3/s solid | Concentration-cap deposition after wet-channel hillslope input. |
+| `f_capdep_other_k` | m3/s solid | Additional bifurcation and visible/protected levee cap transfers; zero when these paths are unused. |
+| `f_ssc_precap_max` | mg L-1 | Maximum total visible-water SSC before any cap during the history window, using configured grain density. |
+| `f_sedsto_k` | m3 solid | Visible suspended solid inventory. Excludes protected suspended storage. |
+| `f_seddep_solid_k` | m3 solid | `(1-porosity) * sum(seddep(k,:,:), bed layer)`; excludes the active layer and protected bed. |
+
+Fluxes use `sum(F * dt) / sum(dt)`. Each cap adds its actual transferred solid
+volume once to its numerator; this volume is **not** multiplied by dt again.
+Dry-carrier/direct hillslope deposits are in `f_d_eff_k`, but not in CapDep.
+CapDep is a subset of effective deposition: do not add it again to `f_d_eff_k`.
+`f_d_eff_k` therefore must not be interpreted as natural settling alone.
+
+Inventories use the same time weights and are sampled after layer redistribution.
+The existing `f_layer_k` now uses this same sampling boundary; it remains a
+**bulk** bed volume, so multiply by `(1-porosity)` before comparing it with the
+new solid inventories. `f_ssc_precap_max` is a window maximum, not a time mean;
+it excludes protected-water SSC and is missing for a catchment that never has
+a positive visible water carrier in that window. Means are missing if no
+diagnostic time has accumulated.
+
+New checkpoints and partial-history sidecars preserve all diagnostic numerators,
+the SSC maximum and `sed_diag_acctime_vec`. Older checkpoints without this group
+start the new diagnostics at zero with a separate averaging clock; existing
+physical state and earlier history numerators retain their original semantics.
+If the new clock is present, every new diagnostic field is required. History
+flush resets the integrals and clock to zero and the SSC maximum to missing.
+
+The DEBUG console integrals also count each morphology interval once. Legacy
+substep depth/discharge min/max slots are missing because the current HYDRO
+handoff retains averages/endpoints but no longer retains these bounds.
+
 ## Migration and lifecycle order
 
 For an older configuration:

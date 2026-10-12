@@ -238,7 +238,8 @@ MODULE MOD_Namelist
 ! ----- Part 11: parameterization schemes -----
 ! ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   integer :: DEF_Interception_scheme = 1
+   integer :: DEF_Interception_scheme = 8  ! Preserve prior CoLM2024 interception default
+   real(r8) :: DEF_MATSIRO_CWCAP_SCALE = 1.0_r8
 
    ! ----- SOIL parameters and supercool water setting ------
    integer :: DEF_THERMAL_CONDUCTIVITY_SCHEME = 4  ! Options for soil thermal conductivity schemes
@@ -284,7 +285,7 @@ MODULE MOD_Namelist
    ! ----- Account for vegetation snow process -----
    ! NOTE: This option will be activated in the new release, accompanied by
    !       a new set of canopy structure data, include the snow-free LAI.
-   logical :: DEF_VEG_SNOW = .false.
+   logical :: DEF_VEG_SNOW = .true.
 
    ! ----- Variably Saturated Flow Soil Water -----
    logical :: DEF_USE_VariablySaturatedFlow = .true.
@@ -325,7 +326,7 @@ MODULE MOD_Namelist
    ! ----- CaMa-Flood -----
    character(len=256) :: DEF_CaMa_Namelist = 'null'
    character(len=256) :: DEF_CaMa_Restart_file = 'null'
-   logical :: DEF_CaMa_FloodFeedback = .false.
+   logical :: DEF_CaMa_FloodFeedback = .true.
    logical :: DEF_CaMa_StrictDomain = .false.
 
    ! ----- lateral flow related -----
@@ -338,7 +339,7 @@ MODULE MOD_Namelist
    logical  :: DEF_USE_EstimatedRiverDepth  = .true.
    integer  :: DEF_Reservoir_Method         = 0
    real(r8) :: DEF_GRIDBASED_ROUTING_MAX_DT = 3600.
-   logical  :: DEF_GRIDBASED_ROUTING_MOMENTUM_DT_LIMIT = .false.
+   logical  :: DEF_GRIDBASED_ROUTING_MOMENTUM_DT_LIMIT = .true.
    logical  :: DEF_GridRiverLake_FloodFeedback = .false.
    logical  :: DEF_GridRiverLake_FloodplainStorageFix = .false.
    real(r8) :: DEF_GridRiverLake_FloodInfiltMax = 5._r8
@@ -1149,6 +1150,7 @@ MODULE MOD_Namelist
       logical :: netflw                           = .true.
       logical :: sedlayer                         = .true.
       logical :: shearvel                         = .false.
+      logical :: seddiag                          = .true. ! Sediment process and inventory diagnostics
 
       logical :: sensors                          = .true.
 
@@ -3122,6 +3124,7 @@ CONTAINS
       CALL sync_hist_vars_one (DEF_hist_vars%netflw      , set_defaults)
       CALL sync_hist_vars_one (DEF_hist_vars%sedlayer    , set_defaults)
       CALL sync_hist_vars_one (DEF_hist_vars%shearvel    , set_defaults)
+      CALL sync_hist_vars_one (DEF_hist_vars%seddiag     , set_defaults)
 
       CALL sync_hist_vars_one (DEF_hist_vars%sensors     , set_defaults)
 
