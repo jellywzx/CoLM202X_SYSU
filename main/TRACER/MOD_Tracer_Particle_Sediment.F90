@@ -93,8 +93,8 @@ MODULE MOD_Tracer_Particle_Sediment
    real(r8), parameter :: SED_DEFAULT_PYLDC = 2.0_r8
    real(r8), parameter :: SED_DEFAULT_PYLDPC = 2.0_r8
    real(r8), parameter :: SED_DEFAULT_DSYLUNIT = 1.0e-6_r8
+   real(r8), parameter :: SED_DEFAULT_MAX_CONC = 0.01_r8 ! Default suspended solid volume fraction
 
-   real(r8), parameter :: MAX_SED_CONC = 0.01_r8 ! Maximum suspended sediment concentration [m3/m3]
    real(r8), parameter :: SED_BEDLOAD_COEFF = 17._r8
    real(r8), parameter :: SED_PRECIP_THRESHOLD_MM_DAY = 10._r8 ! Min rain rate of a forcing step for hillslope yield [mm/day]
    real(r8), parameter :: EXCH_SHEARVEL_MIN = 1.e-4_r8
@@ -789,7 +789,7 @@ CONTAINS
    USE MOD_Grid_RiverLakeNetwork, only: numucat, topo_rivwth, topo_rivlen, &
       topo_rivman, topo_area, ucat_ucid, rivsys_by_multiple_procs
 #ifdef CoLMDEBUG
-   USE MOD_Grid_RiverLakeNetwork, only: x_ucat, y_ucat
+   USE MOD_Grid_RiverLakeNetwork, only: x_ucat, y_ucat, griducat
 #endif
 #ifdef USEMPI
    USE MOD_Grid_RiverLakeNetwork, only: p_comm_rivsys, push_next2ucat, push_ups2ucat
@@ -839,6 +839,7 @@ CONTAINS
    real(r8) :: sum_inst_near_dry_abs_q_local
    real(r8) :: sum_period_near_dry_abs_q_local, sum_period_near_dry_signed_q_local
    real(r8) :: precip_diag_global(3), diag_max_global(11), diag_sum_global(17)
+   real(r8) :: carrier_filter_diag_global(3) ! Near-dry carrier diagnostic sums
    integer  :: n_wet_local, n_shallow_local, n_source_local
    integer  :: n_susp_local, n_bed_local
    integer  :: n_exchange_pos_local, n_exchange_neg_local
@@ -2043,7 +2044,7 @@ CONTAINS
                sedbed_protected(:,i) = sedbed_protected(:,i) + settled
                netflw_adv_step(:,i) = netflw_adv_step(:,i) - settled / dt_morph
                exch_d_adv_step(:,i) = exch_d_adv_step(:,i) + settled / dt_morph
-               excess = max(sum(sedsto_protected(:,i)) - protected_end(i) * MAX_SED_CONC, 0._r8)
+               excess = max(sum(sedsto_protected(:,i)) - protected_end(i) * sed_max_conc, 0._r8)
                IF (excess > 0._r8) THEN
                   transfer = merge(sedsto_protected(:,i), min(sedsto_protected(:,i), &
                      excess * sedsto_protected(:,i) / sum(sedsto_protected(:,i))), &
@@ -2062,7 +2063,7 @@ CONTAINS
             ENDIF
             IF (visible_water(i) > 0._r8) THEN
                CALL record_sediment_precap(i, sedsto(:,i), visible_water(i))
-               excess = max(sum(sedsto(:,i)) - visible_water(i) * MAX_SED_CONC, 0._r8)
+               excess = max(sum(sedsto(:,i)) - visible_water(i) * sed_max_conc, 0._r8)
                IF (excess > 0._r8) THEN
                   transfer = merge(sedsto(:,i), min(sedsto(:,i), excess * sedsto(:,i) / sum(sedsto(:,i))), &
                      excess >= sum(sedsto(:,i)))
@@ -2349,7 +2350,7 @@ CONTAINS
       DO i = 1, numucat
          IF (visible_water(i) > 0._r8) THEN
             CALL record_sediment_precap(i, sedsto(:,i), visible_water(i))
-            excess = max(sum(sedsto(:,i)) - visible_water(i) * MAX_SED_CONC, 0._r8)
+            excess = max(sum(sedsto(:,i)) - visible_water(i) * sed_max_conc, 0._r8)
             IF (excess > 0._r8) THEN
                deposit = merge(sedsto(:,i), min(sedsto(:,i), excess * sedsto(:,i) / sum(sedsto(:,i))), &
                   excess >= sum(sedsto(:,i)))
@@ -2875,8 +2876,8 @@ CONTAINS
          ! same initial stock.  Pre-depositing here would steal that reserved
          ! mass; the end-carrier cap below performs any needed deposition.
          IF (.not. present(initial_conc) .and. &
-             sedsto_sum > max(rivsto_donor(i), 0._r8) * MAX_SED_CONC) THEN
-            dTmp(:) = (sedsto_sum - max(rivsto_donor(i), 0._r8) * MAX_SED_CONC) &
+             sedsto_sum > max(rivsto_donor(i), 0._r8) * sed_max_conc) THEN
+            dTmp(:) = (sedsto_sum - max(rivsto_donor(i), 0._r8) * sed_max_conc) &
                * sedsto(:,i) / sedsto_sum
             dTmp(:) = min(dTmp(:), sedsto(:,i))
             IF (rivsto_donor(i) > 0._r8) CALL record_sediment_cap_deposition(i, 'adv', dTmp)
@@ -2938,8 +2939,8 @@ CONTAINS
          IF (rivsto_end(i) > 0._r8) THEN
             CALL record_sediment_precap(i, sedsto(:,i), rivsto_end(i))
             sedsto_sum = sum(sedsto(:,i))
-            IF (sedsto_sum > rivsto_end(i) * MAX_SED_CONC) THEN
-               dTmp(:) = (sedsto_sum - rivsto_end(i) * MAX_SED_CONC) * &
+            IF (sedsto_sum > rivsto_end(i) * sed_max_conc) THEN
+               dTmp(:) = (sedsto_sum - rivsto_end(i) * sed_max_conc) * &
                   sedsto(:,i) / sedsto_sum
                dTmp(:) = min(dTmp(:), sedsto(:,i))
                CALL record_sediment_cap_deposition(i, 'adv', dTmp)
