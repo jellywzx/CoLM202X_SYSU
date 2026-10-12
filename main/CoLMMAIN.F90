@@ -952,6 +952,9 @@ SUBROUTINE CoLMMAIN ( &
 
 #if (defined LULC_USGS || defined LULC_IGBP)
             CALL LEAF_interception_wrap (deltim,dewmx,forc_us,forc_vs,chil,sigf,&
+#ifdef extend_interception
+                      fsno,&
+#endif
                       lai,sai,forc_t,&
                       tleaf,prc_rain,prc_snow,prl_rain,prl_snow,qflx_irrig_sprinkler,bifall,&
                       patchclass,ncd(ipatch),ncw(ipatch),bcw(ipatch),htop,&
@@ -969,6 +972,9 @@ SUBROUTINE CoLMMAIN ( &
 
 #if (defined LULC_IGBP_PFT || defined LULC_IGBP_PC)
             CALL LEAF_interception_pftwrap (ipatch,deltim,dewmx,forc_us,forc_vs,forc_t,&
+#ifdef extend_interception
+                      fsno,&
+#endif
                       prc_rain,prc_snow,prl_rain,prl_snow,qflx_irrig_sprinkler,bifall,&
                       ldew,ldew_rain,ldew_snow,z0m,forc_hgt_u,pg_rain,&
 #ifdef TRACER
@@ -984,6 +990,9 @@ SUBROUTINE CoLMMAIN ( &
 
          ELSE
             CALL LEAF_interception_wrap (deltim,dewmx,forc_us,forc_vs,chil,sigf,&
+#ifdef extend_interception
+                      fsno,&
+#endif
                       lai,sai,forc_t,&
                       tleaf,prc_rain,prc_snow,prl_rain,prl_snow,qflx_irrig_sprinkler,bifall,&
                       patchclass,ncd(ipatch),ncw(ipatch),bcw(ipatch),htop,&
@@ -1163,8 +1172,19 @@ SUBROUTINE CoLMMAIN ( &
               tstar             ,fm                ,fh                ,fq                ,&
               pg_rain           ,pg_snow           ,t_precip          ,qintr_rain        ,&
               qintr_snow        ,snofrz(lbsn:0)    ,sabg_snow_lyr(lb:1)                 &
+#ifdef extend_interception
+#ifdef CANOPY_FLOOD_FEEDBACK
+             ,flddepth          ,fldfrc            ,fevpg_fld                            &
+#endif
+#if (defined LULC_IGBP_PFT || defined LULC_IGBP_PC)
+             ,canopy_phase_heat, canopy_phase_heat_p                                &
+#else
+             ,canopy_phase_heat                                                    &
+#endif
+#else
 #if (defined CaMa_Flood) || (defined GridRiverLakeFlow)
              ,flddepth          ,fldfrc            ,fevpg_fld                            &
+#endif
 #endif
 #ifdef TRACER
              ,canopy_smelt_mass_th = canopy_smelt_mass_th, &
