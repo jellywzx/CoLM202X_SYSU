@@ -238,7 +238,7 @@ MODULE MOD_Namelist
 ! ----- Part 11: parameterization schemes -----
 ! ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   integer :: DEF_Interception_scheme = 8  !1:CoLM2014; 2:CLM4.5; 3:CLM5; 4:Noah-MP; 5:MATSIRO; 6:VIC; 7:JULES; 8:CoLM2024
+   integer :: DEF_Interception_scheme = 8  ! Preserve prior CoLM2024 interception default
    real(r8) :: DEF_MATSIRO_CWCAP_SCALE = 1.0_r8
 
    ! ----- SOIL parameters and supercool water setting ------
@@ -283,8 +283,8 @@ MODULE MOD_Namelist
    logical :: DEF_SPLIT_SOILSNOW = .false.
 
    ! ----- Account for vegetation snow process -----
-   ! Default is ON so canopy snow interception/unloading and phase storage
-   ! are handled explicitly; runtime namelists may still set it false.
+   ! NOTE: This option will be activated in the new release, accompanied by
+   !       a new set of canopy structure data, include the snow-free LAI.
    logical :: DEF_VEG_SNOW = .true.
 
    ! ----- Variably Saturated Flow Soil Water -----
@@ -324,162 +324,62 @@ MODULE MOD_Namelist
    integer :: DEF_NDEP_FREQUENCY = 1
 
    ! ----- CaMa-Flood -----
-   character(len=256) :: DEF_CaMa_Namelist = 'null' ! legacy data/configuration only
-   character(len=256) :: DEF_CaMa_Restart_file = 'null' ! main-NC mode: matching CaMa NetCDF checkpoint
-   ! main-NC mode: flood evaporation and infiltration exchange between the land and
-   ! the flooded routing cells (two-way coupling).  .false.: the land sees no flood
-   ! water and CaMa takes nothing back, i.e. one-way runoff coupling.
+   character(len=256) :: DEF_CaMa_Namelist = 'null'
+   character(len=256) :: DEF_CaMa_Restart_file = 'null'
    logical :: DEF_CaMa_FloodFeedback = .true.
-   ! main-NC mode: .true. stops the run when the land domain does not hold complete
-   ! drainage basins (a river link or bifurcation crosses the domain edge) or land
-   ! runoff falls on a grid cell that no routing cell receives.  .false. (default):
-   ! warn, route what can be routed, and report the runoff that is dropped.
    logical :: DEF_CaMa_StrictDomain = .false.
 
    ! ----- lateral flow related -----
    character(len=256) :: DEF_ElementNeighbour_file = 'null'
    character(len=256) :: DEF_UnitCatchment_file    = 'null'
-   ! .true.: mksrfdata cuts DEF_UnitCatchment_file down to the river systems that
-   ! receive runoff from the land domain and stores the result in the landdata
-   ! directory; mkinidata and the model then read that file instead.  Saves the
-   ! cost of routing a network that is dry everywhere outside a regional domain.
-   ! Only for GridRiverLakeFlow; CaMa-Flood always reads the full file.
-   ! Restart files belong to the network in use: after switching this on or off,
-   ! rerun mkinidata (or cut an existing restart with tools/subset_unitcatchment.py).
-   ! Unit catchments are renumbered in the regional file; the reservoir catalogue
-   ! (dam_seq in DEF_ReservoirPara_file) is translated to the new numbers.
-   logical  :: DEF_UnitCatchment_regional = .false.
+   logical :: DEF_UnitCatchment_regional = .false.
    character(len=*), parameter :: REGIONAL_UNITCATCHMENT_SUFFIX = '/riverlake/unitcatchment_regional.nc'
    character(len=256) :: DEF_ReservoirPara_file    = 'null'
 
    logical  :: DEF_USE_EstimatedRiverDepth  = .true.
    integer  :: DEF_Reservoir_Method         = 0
    real(r8) :: DEF_GRIDBASED_ROUTING_MAX_DT = 3600.
-   ! .true.: also shorten the routing substep so that no river cell's momentum
-   ! passes through zero within it (dt <= |momentum / net momentum flux|).  On the
-   ! global 15-min network this, not the CFL condition, sets the substep in most
-   ! substeps.  .false.: CFL and storage limits only, as in CaMa-Flood.
    logical  :: DEF_GRIDBASED_ROUTING_MOMENTUM_DT_LIMIT = .true.
-   ! Exchange routed inundation water with land evaporation and infiltration.
-   ! Off preserves the historical one-way runoff coupling and its cost.
    logical  :: DEF_GridRiverLake_FloodFeedback = .false.
+   logical  :: DEF_GridRiverLake_FloodplainStorageFix = .false.
+   real(r8) :: DEF_GridRiverLake_FloodInfiltMax = 5._r8
+   logical  :: DEF_USE_LEVEE = .false.
+   logical  :: DEF_USE_BIFURCATION = .false.
 
-   ! ----- levee module -----
-   logical  :: DEF_USE_LEVEE           = .false.
-
-   ! ----- bifurcation module -----
-   logical  :: DEF_USE_BIFURCATION     = .false.
-
-   ! ----- tracer module -----
-   logical  :: DEF_TRACER_USE_FRACTIONATION = .false.
-   ! Air diffusivity ratios used by the kinetic (Craig-Gordon) term.
-   ! MERLIVAT1978 (1.0285 / 1.0251) is the default so the shipped reference
-   ! experiment reproduces IsoGSM, including its kinetic
-   ! eps_k(HDO)/eps_k(18O) = 0.88 and d-excess response.  CAPPA2003
-   ! (1.03189 / 1.01636) is an alternative laboratory-based sensitivity
-   ! choice.  The selected pair is applied consistently across CoLM surface
-   ! processes; it is not physically required to match the atmospheric
-   ! forcing producer.
+   logical :: DEF_TRACER_USE_FRACTIONATION = .false.
    character(len=16) :: DEF_TRACER_KINETIC_SCHEME = 'MERLIVAT1978'
-   ! Supersaturation slope for vapour->ice deposition, S = 1 - slope*T[C]
-   ! (Jouzel & Merlivat 1984).  Ice growing into supersaturated vapour
-   ! cannot stay in isotopic equilibrium, so the effective solid-vapour
-   ! alpha falls below alpha_eq; without this term frost/rime deposited at
-   ! sub-freezing temperatures comes out too enriched.  0.003 is the
-   ! IsoGSM value (gsml/CLD1/lrgscl.F:198); published GCM choices span
-   ! 0.002-0.004.  Set to 0 to recover pure equilibrium deposition.
    real(r8) :: DEF_TRACER_ICE_SUPERSAT_SLOPE = 0.003_r8
-   ! Humidity cap for the Craig-Gordon evaporate ratio, h = min(RH, this).
-   ! R_E carries a 1/(1-h) factor that the host water flux cancels, so this
-   ! cap is a numerical guard, not physics: every 0.01 shaved off it
-   ! truncates real depletion.  At 25 C with soil water at -5 permil and
-   ! vapour at -12 permil, the h=0.99 evaporate is near -254 permil while
-   ! the former 0.95 cap reported only -75 permil, systematically
-   ! under-enriching residual soil water in humid climates.
    real(r8) :: DEF_TRACER_CG_RELHUM_MAX = 0.99_r8
-   ! Kinetic fractionation law for evaporation from OPEN WATER (lake and
-   ! water-body patches).  'MJ79' is the wind-dependent Merlivat & Jouzel
-   ! (1979) law used by IsoGSM (gsml/ISOTOPE/frkin.F); 'EXPONENT' falls back
-   ! to the n=2/3 diffusivity exponent, which is appropriate to soil pores
-   ! but overstates open-water kinetic fractionation roughly threefold
-   ! (~19 vs ~6 permil for 18O at low wind).
    character(len=16) :: DEF_TRACER_OPEN_WATER_KINETIC = 'MJ79'
-   ! Mass of the surface skin (mm water equivalent) that can exchange
-   ! isotopically during SUBLIMATION within one timestep.  Applying
-   ! Craig-Gordon to a whole snow layer treats tens of mm of ice as one
-   ! well-mixed reservoir and over-enriches the pack; physically only the
-   ! top few mm exchange, while deeper mass leaves bodily as the surface
-   ! retreats.  Set very large to recover the old layer-mixed behaviour, or
-   ! 0 for IsoGSM's non-fractionating sublimation (gsml/moninp.F:384-389).
    real(r8) :: DEF_TRACER_SUBL_SKIN_MM = 5.0_r8
-   ! Kinetic fractionation law for SOIL evaporation.  'RESISTANCE' weights
-   ! the turbulent (n=2/3) and pore-diffusion (n=1) exponents by CoLM's own
-   ! aerodynamic and soil-surface resistances, so the kinetic effect grows
-   ! from ~19 to ~28.5 permil (18O) as the evaporation front retreats into
-   ! the pores.  'EXPONENT' pins it at the wet-soil n=2/3 value.
    character(len=16) :: DEF_TRACER_SOIL_KINETIC = 'RESISTANCE'
-   ! Liquid-phase molecular diffusion of isotopes between soil layers.
-   ! Advection alone cannot produce the peak-shaped delta profile around an
-   ! evaporation front (Barnes & Allison 1983), which is the feature soil
-   ! water isotope profiles are usually compared against.  Diffusion is an
-   ! internal layer-to-layer exchange, so it is exactly mass conserving.
-   logical  :: DEF_TRACER_SOIL_DIFFUSION = .true.
-   ! Vapour-phase isotope diffusion through soil pores, added to the liquid
-   ! term.  Required for the Barnes & Allison (1983) profile: above a dry
-   ! surface the evaporation front sits inside the soil and transport is
-   ! through pore air.  Its moisture dependence is the OPPOSITE of the liquid
-   ! term (air-filled porosity), so it dominates exactly where the liquid film
-   ! shuts down -- ~30x the liquid term at theta = 0.05, ~0.5% at theta = 0.40.
-   logical  :: DEF_TRACER_SOIL_VAPOR_DIFFUSION = .true.
-   ! Degree of two-way equilibrium exchange, per timestep, between
-   ! canopy-intercepted liquid water and ambient vapour (0 = off, 1 = full
-   ! equilibrium).  Wet leaves keep trading molecules with the surrounding
-   ! vapour even at zero net water flux; IsoGSM applies the same device to
-   ! falling raindrops (gsml/CLD1/lrgscl.F, eqf = 0.95).  Ships at 0 because,
-   ! unlike the other terms added here, there is no reference land-surface
-   ! implementation to calibrate the degree against -- it is an empirical
-   ! per-step relaxation, so enabling it is a deliberate modelling choice.
+   logical :: DEF_TRACER_SOIL_DIFFUSION = .true.
+   logical :: DEF_TRACER_SOIL_VAPOR_DIFFUSION = .true.
    real(r8) :: DEF_TRACER_CANOPY_EQUILIBRATION = 0.0_r8
-   ! Degree of isotopic exchange, per snow layer traversed, between
-   ! percolating meltwater and that layer's ice (0 = off, 1 = full ice-water
-   ! equilibrium at R_ice/alpha_ice_liq).  This is what makes early meltwater
-   ! come out depleted relative to the pack and the residual pack enrich
-   ! (Taylor et al. 2001) -- an effect of several permil that is clearly seen
-   ! in observations, so enabling it is usually the more realistic choice.
-   ! Ships at 0 only because the per-layer degree is an empirical parameter
-   ! with no reference land-surface implementation to calibrate it against;
-   ! values near 1 are appropriate for thin layers.  Internal ice<->water
-   ! exchange, so it is exactly mass conserving and needs no accumulator.
    real(r8) :: DEF_TRACER_SNOWMELT_EQUILIBRATION = 0.0_r8
    real(r8) :: DEF_TRACER_NSS_LEAF_WATER_PER_LAI = 0.12_r8
    real(r8) :: DEF_TRACER_NSS_LEAF_PATH_LENGTH = 0.01_r8
    real(r8) :: DEF_TRACER_NSS_LEAF_RB = 100._r8
-   ! Calibrated effective isotope-mixing water above the aquifer anomaly wa [mm].
-   ! Deliberately unset: an isotope run with VSF must provide this explicitly.
    real(r8) :: DEF_TRACER_AQUIFER_MIXING_WATER_MM = -1._r8
-   ! No species is implicit: isotopes, gases, solutes and particles use the same list.
-   integer  :: DEF_TRACER_NUM          = 0
-   ! Allowed aggregate bad entries before abort; zero preserves strict behavior.
-   integer  :: DEF_TRACER_BALANCE_ABORT_NBAD = 0
-   integer  :: DEF_TRACER_RESID_ABORT_NBAD   = 0
-   integer  :: DEF_TRACER_LULCC_ABORT_NBAD   = 0
-   character(len=256) :: DEF_TRACER_NAMES     = ""
-   character(len=256) :: DEF_TRACER_TYPES     = ""
-   character(len=256) :: DEF_TRACER_MRAT      = ""
-   character(len=256) :: DEF_TRACER_REF_RATIO = ""
-   character(len=256) :: DEF_TRACER_INIT_DELTA = ""
-   character(len=256) :: DEF_TRACER_REACTIVE_DECAY_RATE = ""
-   logical  :: DEF_TRACER_USE_SOIL_INIT = .false.
+   integer :: DEF_TRACER_NUM = 0
+   integer :: DEF_TRACER_BALANCE_ABORT_NBAD = 0
+   integer :: DEF_TRACER_RESID_ABORT_NBAD = 0
+   integer :: DEF_TRACER_LULCC_ABORT_NBAD = 0
+   character(len=256) :: DEF_TRACER_NAMES = ''
+   character(len=256) :: DEF_TRACER_TYPES = ''
+   character(len=256) :: DEF_TRACER_MRAT = ''
+   character(len=256) :: DEF_TRACER_REF_RATIO = ''
+   character(len=256) :: DEF_TRACER_INIT_DELTA = ''
+   character(len=256) :: DEF_TRACER_REACTIVE_DECAY_RATE = ''
+   logical :: DEF_TRACER_USE_SOIL_INIT = .false.
    character(len=256) :: DEF_TRACER_SOIL_INIT_FILE = 'null'
    character(len=256) :: DEF_TRACER_SOIL_INIT_VARS = ''
-   ! Per-species files carry unit/capability metadata plus optional
-   ! species-owned parameter groups; use NAME:path mappings where possible.
    character(len=2048) :: DEF_TRACER_PARAM_FILES = 'null'
 #if (defined TRACER) && (defined BGC)
-   ! ----- Generic BGC/reactive-tracer shared inputs -----
    character(len=256) :: DEF_file_GIEMS = 'null'
    integer :: DEF_wetland_finundation_scheme = 1
 #endif
+
    ! ----- others -----
    character(len=5)   :: DEF_precip_phase_discrimination_scheme = 'II'
 
@@ -578,14 +478,6 @@ MODULE MOD_Namelist
       character(len=256) :: CBL_tintalgo       = 'linear'
       integer            :: CBL_dtime          = 21600
       integer            :: CBL_offset         = 10800
-
-      ! NOTE: per-tracer forcing (precip/vapor fprefix/vname/dtime/offset/...)
-      ! is no longer carried in DEF_forcing. Each tracer declares its OWN
-      ! forcing in its parameter file via &nl_colm_tracer_forcing, read by
-      ! main/TRACER/MOD_Tracer_ForcingInput.F90. The former global CSV fields
-      ! (tracer_precip_*/tracer_vapor_*) and legacy per-species shortcuts
-      ! (precipitation_O18_*/_H2_*, water_vapor_O18_*/_H2_*) were removed in
-      ! the per-species forcing refactor (2026-05-29).
    END type nl_forcing_type
 
    type (nl_forcing_type) :: DEF_forcing
@@ -977,6 +869,111 @@ MODULE MOD_Namelist
       logical :: ndep_to_sminn                    = .true.
       logical :: CONC_O2_UNSAT                    = .false.
       logical :: O2_DECOMP_DEPTH_UNSAT            = .false.
+      ! Fire history fields (available with BGC, including zero fire-off fluxes).
+      logical :: farea_burned = .true.
+      logical :: baf_crop = .true.
+      logical :: baf_peatf = .true.
+      logical :: nfire = .true.
+      logical :: fuelc = .true.
+      logical :: btran2 = .true.
+      logical :: pft_fire_closs = .true.
+      logical :: pft_fire_nloss = .true.
+      logical :: col_fire_closs = .true.
+      logical :: col_fire_nloss = .true.
+      logical :: somc_fire = .true.
+      logical :: litfire = .true.
+      logical :: somfire = .true.
+      logical :: totfire = .true.
+      logical :: m_leafc_to_fire = .false.
+      logical :: m_frootc_to_fire = .false.
+      logical :: m_livestemc_to_fire = .false.
+      logical :: m_deadstemc_to_fire = .false.
+      logical :: m_livecrootc_to_fire = .false.
+      logical :: m_deadcrootc_to_fire = .false.
+      logical :: m_leafc_storage_to_fire = .false.
+      logical :: m_frootc_storage_to_fire = .false.
+      logical :: m_livestemc_storage_to_fire = .false.
+      logical :: m_deadstemc_storage_to_fire = .false.
+      logical :: m_livecrootc_storage_to_fire = .false.
+      logical :: m_deadcrootc_storage_to_fire = .false.
+      logical :: m_gresp_storage_to_fire = .false.
+      logical :: m_leafc_xfer_to_fire = .false.
+      logical :: m_frootc_xfer_to_fire = .false.
+      logical :: m_livestemc_xfer_to_fire = .false.
+      logical :: m_deadstemc_xfer_to_fire = .false.
+      logical :: m_livecrootc_xfer_to_fire = .false.
+      logical :: m_deadcrootc_xfer_to_fire = .false.
+      logical :: m_gresp_xfer_to_fire = .false.
+      logical :: m_livestemc_to_deadstemc_fire = .false.
+      logical :: m_livecrootc_to_deadcrootc_fire = .false.
+      logical :: m_leafc_to_litter_fire = .false.
+      logical :: m_frootc_to_litter_fire = .false.
+      logical :: m_livestemc_to_litter_fire = .false.
+      logical :: m_deadstemc_to_litter_fire = .false.
+      logical :: m_livecrootc_to_litter_fire = .false.
+      logical :: m_deadcrootc_to_litter_fire = .false.
+      logical :: m_leafc_storage_to_litter_fire = .false.
+      logical :: m_frootc_storage_to_litter_fire = .false.
+      logical :: m_livestemc_storage_to_litter_fire = .false.
+      logical :: m_deadstemc_storage_to_litter_fire = .false.
+      logical :: m_livecrootc_storage_to_litter_fire = .false.
+      logical :: m_deadcrootc_storage_to_litter_fire = .false.
+      logical :: m_gresp_storage_to_litter_fire = .false.
+      logical :: m_leafc_xfer_to_litter_fire = .false.
+      logical :: m_frootc_xfer_to_litter_fire = .false.
+      logical :: m_livestemc_xfer_to_litter_fire = .false.
+      logical :: m_deadstemc_xfer_to_litter_fire = .false.
+      logical :: m_livecrootc_xfer_to_litter_fire = .false.
+      logical :: m_deadcrootc_xfer_to_litter_fire = .false.
+      logical :: m_gresp_xfer_to_litter_fire = .false.
+      logical :: m_leafn_to_fire = .false.
+      logical :: m_frootn_to_fire = .false.
+      logical :: m_livestemn_to_fire = .false.
+      logical :: m_deadstemn_to_fire = .false.
+      logical :: m_livecrootn_to_fire = .false.
+      logical :: m_deadcrootn_to_fire = .false.
+      logical :: m_leafn_storage_to_fire = .false.
+      logical :: m_frootn_storage_to_fire = .false.
+      logical :: m_livestemn_storage_to_fire = .false.
+      logical :: m_deadstemn_storage_to_fire = .false.
+      logical :: m_livecrootn_storage_to_fire = .false.
+      logical :: m_deadcrootn_storage_to_fire = .false.
+      logical :: m_leafn_xfer_to_fire = .false.
+      logical :: m_frootn_xfer_to_fire = .false.
+      logical :: m_livestemn_xfer_to_fire = .false.
+      logical :: m_deadstemn_xfer_to_fire = .false.
+      logical :: m_livecrootn_xfer_to_fire = .false.
+      logical :: m_deadcrootn_xfer_to_fire = .false.
+      logical :: m_livestemn_to_deadstemn_fire = .false.
+      logical :: m_livecrootn_to_deadcrootn_fire = .false.
+      logical :: m_retransn_to_fire = .false.
+      logical :: m_leafn_to_litter_fire = .false.
+      logical :: m_frootn_to_litter_fire = .false.
+      logical :: m_livestemn_to_litter_fire = .false.
+      logical :: m_deadstemn_to_litter_fire = .false.
+      logical :: m_livecrootn_to_litter_fire = .false.
+      logical :: m_deadcrootn_to_litter_fire = .false.
+      logical :: m_leafn_storage_to_litter_fire = .false.
+      logical :: m_frootn_storage_to_litter_fire = .false.
+      logical :: m_livestemn_storage_to_litter_fire = .false.
+      logical :: m_deadstemn_storage_to_litter_fire = .false.
+      logical :: m_livecrootn_storage_to_litter_fire = .false.
+      logical :: m_deadcrootn_storage_to_litter_fire = .false.
+      logical :: m_leafn_xfer_to_litter_fire = .false.
+      logical :: m_frootn_xfer_to_litter_fire = .false.
+      logical :: m_livestemn_xfer_to_litter_fire = .false.
+      logical :: m_deadstemn_xfer_to_litter_fire = .false.
+      logical :: m_livecrootn_xfer_to_litter_fire = .false.
+      logical :: m_deadcrootn_xfer_to_litter_fire = .false.
+      logical :: m_retransn_to_litter_fire = .false.
+      logical :: m_litr1_c_to_fire = .false.
+      logical :: m_litr1_n_to_fire = .false.
+      logical :: m_litr2_c_to_fire = .false.
+      logical :: m_litr2_n_to_fire = .false.
+      logical :: m_litr3_c_to_fire = .false.
+      logical :: m_litr3_n_to_fire = .false.
+      logical :: m_cwd_c_to_fire = .false.
+      logical :: m_cwd_n_to_fire = .false.
       logical :: abm                              = .false.
       logical :: gdp                              = .false.
       logical :: peatf                            = .false.
@@ -1229,7 +1226,6 @@ CONTAINS
       DEF_LAI_MONTHLY,                        & !add by zhongwang wei @ sysu 2021/12/23
       DEF_NDEP_FREQUENCY,                     & !add by Fang Shang    @ pku  2023/08
       DEF_Interception_scheme,                & !add by zhongwang wei @ sysu 2022/05/23
-      DEF_MATSIRO_CWCAP_SCALE,               &
       DEF_SSP,                                & !add by zhongwang wei @ sysu 2023/02/07
 
       DEF_LAI_START_YEAR,                     &
@@ -1304,41 +1300,45 @@ CONTAINS
       DEF_Reservoir_Method,                   &
       DEF_GRIDBASED_ROUTING_MAX_DT,           &
       DEF_GRIDBASED_ROUTING_MOMENTUM_DT_LIMIT, &
-      DEF_GridRiverLake_FloodFeedback, &
-
+      DEF_GridRiverLake_FloodFeedback,        &
+      DEF_GridRiverLake_FloodplainStorageFix,  &
+      DEF_GridRiverLake_FloodInfiltMax,        &
       DEF_USE_LEVEE,                          &
       DEF_USE_BIFURCATION,                    &
-      DEF_TRACER_USE_FRACTIONATION,           &
-      DEF_TRACER_KINETIC_SCHEME,              &
-      DEF_TRACER_ICE_SUPERSAT_SLOPE,          &
-      DEF_TRACER_CG_RELHUM_MAX,               &
-      DEF_TRACER_OPEN_WATER_KINETIC,          &
-      DEF_TRACER_SUBL_SKIN_MM,                &
-      DEF_TRACER_SOIL_KINETIC,                &
-      DEF_TRACER_SOIL_DIFFUSION,              &
-      DEF_TRACER_SOIL_VAPOR_DIFFUSION,        &
-      DEF_TRACER_CANOPY_EQUILIBRATION,        &
-      DEF_TRACER_SNOWMELT_EQUILIBRATION,      &
-      DEF_TRACER_NSS_LEAF_WATER_PER_LAI,      &
-      DEF_TRACER_NSS_LEAF_PATH_LENGTH,        &
-      DEF_TRACER_NSS_LEAF_RB,                 &
-      DEF_TRACER_AQUIFER_MIXING_WATER_MM,     &
-      DEF_TRACER_NUM,                         &
-      DEF_TRACER_BALANCE_ABORT_NBAD,          &
-      DEF_TRACER_RESID_ABORT_NBAD,            &
-      DEF_TRACER_LULCC_ABORT_NBAD,            &
-      DEF_TRACER_NAMES,                       &
-      DEF_TRACER_TYPES,                       &
-      DEF_TRACER_MRAT,                        &
-      DEF_TRACER_REF_RATIO,                   &
-      DEF_TRACER_INIT_DELTA,                  &
-      DEF_TRACER_REACTIVE_DECAY_RATE,         &
-      DEF_TRACER_USE_SOIL_INIT,               &
-      DEF_TRACER_SOIL_INIT_FILE,              &
-      DEF_TRACER_SOIL_INIT_VARS,              &
-      DEF_TRACER_PARAM_FILES,        &
-#if (defined TRACER) && (defined BGC)
-      DEF_file_GIEMS,                         &
+
+#ifdef TRACER
+      DEF_TRACER_USE_FRACTIONATION, &
+      DEF_TRACER_KINETIC_SCHEME, &
+      DEF_TRACER_ICE_SUPERSAT_SLOPE, &
+      DEF_TRACER_CG_RELHUM_MAX, &
+      DEF_TRACER_OPEN_WATER_KINETIC, &
+      DEF_TRACER_SUBL_SKIN_MM, &
+      DEF_TRACER_SOIL_KINETIC, &
+      DEF_TRACER_SOIL_DIFFUSION, &
+      DEF_TRACER_SOIL_VAPOR_DIFFUSION, &
+      DEF_TRACER_CANOPY_EQUILIBRATION, &
+      DEF_TRACER_SNOWMELT_EQUILIBRATION, &
+      DEF_TRACER_NSS_LEAF_WATER_PER_LAI, &
+      DEF_TRACER_NSS_LEAF_PATH_LENGTH, &
+      DEF_TRACER_NSS_LEAF_RB, &
+      DEF_TRACER_AQUIFER_MIXING_WATER_MM, &
+      DEF_TRACER_NUM, &
+      DEF_TRACER_BALANCE_ABORT_NBAD, &
+      DEF_TRACER_RESID_ABORT_NBAD, &
+      DEF_TRACER_LULCC_ABORT_NBAD, &
+      DEF_TRACER_NAMES, &
+      DEF_TRACER_TYPES, &
+      DEF_TRACER_MRAT, &
+      DEF_TRACER_REF_RATIO, &
+      DEF_TRACER_INIT_DELTA, &
+      DEF_TRACER_REACTIVE_DECAY_RATE, &
+      DEF_TRACER_USE_SOIL_INIT, &
+      DEF_TRACER_SOIL_INIT_FILE, &
+      DEF_TRACER_SOIL_INIT_VARS, &
+      DEF_TRACER_PARAM_FILES, &
+#if defined BGC
+      DEF_file_GIEMS, &
+#endif
 #endif
 
       DEF_precip_phase_discrimination_scheme, &
@@ -1429,10 +1429,10 @@ CONTAINS
             CALL CoLM_Stop (' ***** ERROR: Problem reading namelist: '// trim(nlfile))
          ENDIF
          close(10)
-         ! A saturated fixed-length value may already have been silently truncated.
-         IF (len_trim(DEF_TRACER_PARAM_FILES) == len(DEF_TRACER_PARAM_FILES)) THEN
-            CALL CoLM_Stop('DEF_TRACER_PARAM_FILES exceeds supported length; use shorter paths or fewer species.')
-         ENDIF
+#ifdef TRACER
+         IF (len_trim(DEF_TRACER_PARAM_FILES) == len(DEF_TRACER_PARAM_FILES)) &
+            CALL CoLM_Stop ('DEF_TRACER_PARAM_FILES is too long.')
+#endif
 
          open(10, status='OLD', file=trim(DEF_forcing_namelist), form="FORMATTED")
          read(10, nml=nl_colm_forcing, iostat=ierr, iomsg=iomesg)
@@ -1461,74 +1461,81 @@ CONTAINS
          DEF_HIST_mode = 'one'
 #endif
 
-         ! Validate the history mode here, once, rather than letting each
-         ! writer decide.  The gridded writer branches IF 'one' ... ELSEIF
-         ! 'block', with no ELSE, so a typo silently produced no output at
-         ! all; the route-history writers now key on the same string, which
-         ! would have doubled that failure mode.
+         IF (DEF_UnitCatchment_regional) THEN
+            IF (trim(DEF_UnitCatchment_file) == 'null') &
+               CALL CoLM_Stop ('Regional unit catchment requires DEF_UnitCatchment_file.')
+            IF (len_trim(DEF_dir_landdata) + len(REGIONAL_UNITCATCHMENT_SUFFIX) > len(DEF_dir_landdata)) &
+               CALL CoLM_Stop ('Regional unit catchment path is too long.')
+#if defined LULCC || !defined GridRiverLakeFlow
+            CALL CoLM_Stop ('Regional unit catchment requires GridRiverLakeFlow without LULCC.')
+#endif
+         ENDIF
+#ifndef GridRiverLakeFlow
+         IF (DEF_GridRiverLake_FloodFeedback .or. DEF_GridRiverLake_FloodplainStorageFix .or. &
+             DEF_USE_LEVEE) &
+            CALL CoLM_Stop ('RiverLake features require GridRiverLakeFlow.')
+#endif
+         IF (DEF_GridRiverLake_FloodFeedback .and. .not. DEF_GridRiverLake_FloodplainStorageFix) &
+            CALL CoLM_Stop ('Grid flood feedback requires DEF_GridRiverLake_FloodplainStorageFix.')
+#ifdef LULCC
+         IF (DEF_GridRiverLake_FloodFeedback) CALL CoLM_Stop ('Grid flood feedback does not support LULCC.')
+#endif
+         IF (.not. (DEF_GRIDBASED_ROUTING_MAX_DT > 0._r8 .and. DEF_GRIDBASED_ROUTING_MAX_DT < huge(1._r8))) &
+            CALL CoLM_Stop ('DEF_GRIDBASED_ROUTING_MAX_DT must be finite and positive.')
+#ifndef CaMa_Flood
+         IF (DEF_CaMa_FloodFeedback) CALL CoLM_Stop ('CaMa feedback requires CaMa_Flood.')
+#endif
+         IF ((DEF_GridRiverLake_FloodFeedback .or. DEF_CaMa_FloodFeedback) .and. DEF_Runoff_SCHEME /= 0) THEN
+            write(*,*) 'Note: DEF_Runoff_SCHEME is set to 0 for two-way river coupling.'
+            DEF_Runoff_SCHEME = 0
+         ENDIF
+#if !defined GridRiverLakeFlow && !defined CaMa_Flood
+         IF (DEF_USE_BIFURCATION) CALL CoLM_Stop ('Bifurcation requires a river routing solver.')
+#endif
+#ifdef TRACER
+         SELECT CASE (trim(adjustl(DEF_TRACER_KINETIC_SCHEME)))
+         CASE ('CAPPA2003', 'Cappa2003', 'cappa2003')
+            DEF_TRACER_KINETIC_SCHEME = 'CAPPA2003'
+         CASE ('MERLIVAT1978', 'Merlivat1978', 'merlivat1978')
+            DEF_TRACER_KINETIC_SCHEME = 'MERLIVAT1978'
+         CASE DEFAULT
+            CALL CoLM_Stop ('Invalid DEF_TRACER_KINETIC_SCHEME.')
+         END SELECT
+         SELECT CASE (trim(adjustl(DEF_TRACER_OPEN_WATER_KINETIC)))
+         CASE ('MJ79', 'mj79')
+            DEF_TRACER_OPEN_WATER_KINETIC = 'MJ79'
+         CASE ('EXPONENT', 'exponent')
+            DEF_TRACER_OPEN_WATER_KINETIC = 'EXPONENT'
+         CASE DEFAULT
+            CALL CoLM_Stop ('Invalid DEF_TRACER_OPEN_WATER_KINETIC.')
+         END SELECT
+         SELECT CASE (trim(adjustl(DEF_TRACER_SOIL_KINETIC)))
+         CASE ('RESISTANCE', 'resistance')
+            DEF_TRACER_SOIL_KINETIC = 'RESISTANCE'
+         CASE ('EXPONENT', 'exponent')
+            DEF_TRACER_SOIL_KINETIC = 'EXPONENT'
+         CASE DEFAULT
+            CALL CoLM_Stop ('Invalid DEF_TRACER_SOIL_KINETIC.')
+         END SELECT
+         IF (DEF_TRACER_CG_RELHUM_MAX <= 0._r8 .or. DEF_TRACER_CG_RELHUM_MAX >= 1._r8 .or. &
+             DEF_TRACER_CANOPY_EQUILIBRATION < 0._r8 .or. DEF_TRACER_CANOPY_EQUILIBRATION > 1._r8 .or. &
+             DEF_TRACER_SNOWMELT_EQUILIBRATION < 0._r8 .or. DEF_TRACER_SNOWMELT_EQUILIBRATION > 1._r8 .or. &
+             DEF_TRACER_SUBL_SKIN_MM < 0._r8 .or. DEF_TRACER_ICE_SUPERSAT_SLOPE < 0._r8) &
+            CALL CoLM_Stop ('Invalid TRACER fractionation parameter.')
+         IF (DEF_TRACER_BALANCE_ABORT_NBAD < 0 .or. DEF_TRACER_RESID_ABORT_NBAD < 0 .or. &
+             DEF_TRACER_LULCC_ABORT_NBAD < 0) CALL CoLM_Stop ('Invalid TRACER abort threshold.')
+#endif
+
          SELECT CASE (trim(adjustl(DEF_HIST_mode)))
          CASE ('one', 'block')
             DEF_HIST_mode = trim(adjustl(DEF_HIST_mode))
          CASE DEFAULT
-            write(*,'(A,A,A)') 'Fatal ERROR: DEF_HIST_mode="', &
-               trim(DEF_HIST_mode), '" is invalid; use one or block.'
-            CALL CoLM_stop ()
+            CALL CoLM_Stop ('DEF_HIST_mode must be one or block.')
          END SELECT
 
-         IF (.not. ieee_is_finite(DEF_GRIDBASED_ROUTING_MAX_DT)) THEN
-            write(*,*) '                  *****                  '
-            write(*,*) 'ERROR: DEF_GRIDBASED_ROUTING_MAX_DT must be finite and greater than zero.'
-            CALL CoLM_Stop ()
-         ELSEIF (DEF_GRIDBASED_ROUTING_MAX_DT <= 0._r8) THEN
-            write(*,*) '                  *****                  '
-            write(*,*) 'ERROR: DEF_GRIDBASED_ROUTING_MAX_DT must be finite and greater than zero.'
-            CALL CoLM_Stop ()
-         ENDIF
-
-         IF (DEF_UnitCatchment_regional) THEN
-#ifdef LULCC
-            ! The regional file is cut to the land domain of one land-cover year;
-            ! later years may cover different coastal pixels.
-            write(*,*) '                  *****                  '
-            write(*,*) 'ERROR: DEF_UnitCatchment_regional is not supported with LULCC.'
-            CALL CoLM_Stop ()
-#endif
-            IF (trim(DEF_UnitCatchment_file) == 'null') THEN
-               write(*,*) '                  *****                  '
-               write(*,*) 'ERROR: DEF_UnitCatchment_regional needs DEF_UnitCatchment_file.'
-               CALL CoLM_Stop ()
-            ENDIF
-#ifndef GridRiverLakeFlow
-            ! Only the river-lake routing cuts its network.  CaMa-Flood (which
-            ! reads DEF_UnitCatchment_file itself), the catchment-based lateral flow
-            ! and single-point runs keep the full map.
-            write(*,*) '                  *****                  '
-            write(*,*) 'ERROR: DEF_UnitCatchment_regional applies to GridRiverLakeFlow builds only.'
-            CALL CoLM_Stop ()
-#endif
-            IF (len_trim(DEF_dir_landdata) + len(REGIONAL_UNITCATCHMENT_SUFFIX) > len(DEF_dir_landdata)) THEN
-               write(*,*) '                  *****                  '
-               write(*,*) 'ERROR: the landdata path is too long for the regional unit-catchment file.'
-               CALL CoLM_Stop ()
-            ENDIF
-         ENDIF
-
-#ifndef GridRiverLakeFlow
-         IF (DEF_GridRiverLake_FloodFeedback) THEN
-            write(*,*) 'ERROR: DEF_GridRiverLake_FloodFeedback needs a GridRiverLakeFlow build.'
-            CALL CoLM_Stop ()
-         ENDIF
-#endif
-
-         IF (.not. ieee_is_finite(DEF_simulation_time%timestep)) THEN
-            write(*,*) '                  *****                  '
-            write(*,*) 'ERROR: timestep must be finite and greater than zero.'
-            CALL CoLM_Stop ()
-         ELSEIF (DEF_simulation_time%timestep <= 0._r8) THEN
-            write(*,*) '                  *****                  '
-            write(*,*) 'ERROR: timestep must be finite and greater than zero.'
-            CALL CoLM_Stop ()
-         ELSEIF (DEF_simulation_time%timestep > 3600._r8) THEN
+         IF (.not. (DEF_simulation_time%timestep > 0._r8 .and. DEF_simulation_time%timestep < huge(1._r8))) &
+            CALL CoLM_Stop ('timestep must be finite and greater than zero.')
+         IF (DEF_simulation_time%timestep > 3600.) THEN
             write(*,*) '                  *****                  '
             write(*,*) 'Warning: timestep should be less than or equal to 3600 seconds.'
             CALL CoLM_Stop ()
@@ -1553,75 +1560,8 @@ CONTAINS
          DEF_USE_VariablySaturatedFlow = .true.
 #endif
 #ifdef TRACER
-         SELECT CASE (trim(adjustl(DEF_TRACER_KINETIC_SCHEME)))
-         CASE ('CAPPA2003', 'Cappa2003', 'cappa2003')
-            DEF_TRACER_KINETIC_SCHEME = 'CAPPA2003'
-         CASE ('MERLIVAT1978', 'Merlivat1978', 'merlivat1978')
-            DEF_TRACER_KINETIC_SCHEME = 'MERLIVAT1978'
-         CASE DEFAULT
-            write(*,'(A,A,A)') 'Fatal ERROR: DEF_TRACER_KINETIC_SCHEME="', &
-               trim(DEF_TRACER_KINETIC_SCHEME), '" is invalid; use CAPPA2003 or MERLIVAT1978.'
-            CALL CoLM_stop ()
-         END SELECT
-         SELECT CASE (trim(adjustl(DEF_TRACER_OPEN_WATER_KINETIC)))
-         CASE ('MJ79', 'mj79', 'MERLIVAT_JOUZEL1979')
-            DEF_TRACER_OPEN_WATER_KINETIC = 'MJ79'
-         CASE ('EXPONENT', 'exponent')
-            DEF_TRACER_OPEN_WATER_KINETIC = 'EXPONENT'
-         CASE DEFAULT
-            write(*,'(A,A,A)') 'Fatal ERROR: DEF_TRACER_OPEN_WATER_KINETIC="', &
-               trim(DEF_TRACER_OPEN_WATER_KINETIC), '" is invalid; use MJ79 or EXPONENT.'
-            CALL CoLM_stop ()
-         END SELECT
-         IF (DEF_TRACER_CG_RELHUM_MAX <= 0._r8 .or. DEF_TRACER_CG_RELHUM_MAX >= 1._r8) THEN
-            write(*,*) 'Fatal ERROR: DEF_TRACER_CG_RELHUM_MAX must lie strictly ', &
-               'between 0 and 1 (it caps h in the Craig-Gordon 1/(1-h) factor).'
-            CALL CoLM_stop ()
-         ENDIF
-         SELECT CASE (trim(adjustl(DEF_TRACER_SOIL_KINETIC)))
-         CASE ('RESISTANCE', 'resistance')
-            DEF_TRACER_SOIL_KINETIC = 'RESISTANCE'
-         CASE ('EXPONENT', 'exponent')
-            DEF_TRACER_SOIL_KINETIC = 'EXPONENT'
-         CASE DEFAULT
-            write(*,'(A,A,A)') 'Fatal ERROR: DEF_TRACER_SOIL_KINETIC="', &
-               trim(DEF_TRACER_SOIL_KINETIC), '" is invalid; use RESISTANCE or EXPONENT.'
-            CALL CoLM_stop ()
-         END SELECT
-         IF (DEF_TRACER_SNOWMELT_EQUILIBRATION < 0._r8 .or. &
-             DEF_TRACER_SNOWMELT_EQUILIBRATION > 1._r8) THEN
-            write(*,*) 'Fatal ERROR: DEF_TRACER_SNOWMELT_EQUILIBRATION must lie ', &
-               'in [0,1] (it is a per-layer equilibration degree).'
-            CALL CoLM_stop ()
-         ENDIF
-         IF (DEF_TRACER_CANOPY_EQUILIBRATION < 0._r8 .or. &
-             DEF_TRACER_CANOPY_EQUILIBRATION > 1._r8) THEN
-            write(*,*) 'Fatal ERROR: DEF_TRACER_CANOPY_EQUILIBRATION must lie ', &
-               'in [0,1] (it is a per-step equilibration degree).'
-            CALL CoLM_stop ()
-         ENDIF
-         IF (DEF_TRACER_SUBL_SKIN_MM < 0._r8) THEN
-            write(*,*) 'Fatal ERROR: DEF_TRACER_SUBL_SKIN_MM must be >= 0 ', &
-               '(0 makes sublimation non-fractionating).'
-            CALL CoLM_stop ()
-         ENDIF
-         IF (DEF_TRACER_ICE_SUPERSAT_SLOPE < 0._r8) THEN
-            write(*,*) 'Fatal ERROR: DEF_TRACER_ICE_SUPERSAT_SLOPE must be >= 0 ', &
-               '(0 disables the Jouzel-Merlivat supersaturation term).'
-            CALL CoLM_stop ()
-         ENDIF
-         IF (DEF_TRACER_BALANCE_ABORT_NBAD < 0 .or. DEF_TRACER_RESID_ABORT_NBAD < 0 .or. &
-             DEF_TRACER_LULCC_ABORT_NBAD < 0) THEN
-            write(*,*) 'Fatal ERROR: DEF_TRACER_*_ABORT_NBAD values must be non-negative.'
-            CALL CoLM_stop ()
-         ENDIF
-         IF (.not. DEF_USE_VariablySaturatedFlow) THEN
-            write(*,*) '                  *****                  '
-            write(*,*) 'Fatal ERROR: TRACER requires DEF_USE_VariablySaturatedFlow = .true.'
-            write(*,*) 'Please enable VariablySaturatedFlow/vanGenuchten_Mualem soil hydrology'
-            write(*,*) 'or rebuild with #undef TRACER.'
-            CALL CoLM_stop ()
-         ENDIF
+         IF (.not. DEF_USE_VariablySaturatedFlow) &
+            CALL CoLM_Stop ('TRACER requires variably saturated flow.')
 #endif
 #ifdef SinglePoint
          IF (DEF_Runoff_SCHEME == 0) THEN
@@ -2045,7 +1985,6 @@ CONTAINS
       CALL mpi_bcast (DEF_LAI_MONTHLY                        ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
       CALL mpi_bcast (DEF_NDEP_FREQUENCY                     ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
       CALL mpi_bcast (DEF_Interception_scheme                ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_MATSIRO_CWCAP_SCALE               ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
       CALL mpi_bcast (DEF_SSP                                ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
 
       CALL mpi_bcast (DEF_USE_CBL_HEIGHT                     ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
@@ -2127,43 +2066,46 @@ CONTAINS
       CALL mpi_bcast (DEF_Reservoir_Method                   ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
       CALL mpi_bcast (DEF_GRIDBASED_ROUTING_MAX_DT           ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
       CALL mpi_bcast (DEF_GRIDBASED_ROUTING_MOMENTUM_DT_LIMIT,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_GridRiverLake_FloodFeedback       ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
-
+      CALL mpi_bcast (DEF_GridRiverLake_FloodFeedback        ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_GridRiverLake_FloodplainStorageFix ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_GridRiverLake_FloodInfiltMax       ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
       CALL mpi_bcast (DEF_USE_LEVEE                          ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
       CALL mpi_bcast (DEF_USE_BIFURCATION                    ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_USE_FRACTIONATION           ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_KINETIC_SCHEME              ,16  ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_ICE_SUPERSAT_SLOPE          ,1   ,mpi_double_precision,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_CG_RELHUM_MAX               ,1   ,mpi_double_precision,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_OPEN_WATER_KINETIC          ,16  ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_SUBL_SKIN_MM                ,1   ,mpi_double_precision,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_SOIL_KINETIC                ,16  ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_SOIL_DIFFUSION              ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_SOIL_VAPOR_DIFFUSION        ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_CANOPY_EQUILIBRATION         ,1   ,mpi_double_precision,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_SNOWMELT_EQUILIBRATION       ,1   ,mpi_double_precision,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_NSS_LEAF_WATER_PER_LAI      ,1   ,mpi_double_precision,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_NSS_LEAF_PATH_LENGTH        ,1   ,mpi_double_precision,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_NSS_LEAF_RB                 ,1   ,mpi_double_precision,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_AQUIFER_MIXING_WATER_MM     ,1   ,mpi_double_precision,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_NUM                         ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_BALANCE_ABORT_NBAD          ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_RESID_ABORT_NBAD            ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_LULCC_ABORT_NBAD            ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_NAMES                       ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_TYPES                       ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_MRAT                        ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_REF_RATIO                   ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_INIT_DELTA                  ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_REACTIVE_DECAY_RATE         ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_USE_SOIL_INIT               ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_SOIL_INIT_FILE              ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_SOIL_INIT_VARS              ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
-      CALL mpi_bcast (DEF_TRACER_PARAM_FILES, len(DEF_TRACER_PARAM_FILES), &
-         mpi_character, p_address_master, p_comm_glb, p_err)
-#if (defined TRACER) && (defined BGC)
+
+#ifdef TRACER
+      CALL mpi_bcast (DEF_TRACER_USE_FRACTIONATION            ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_KINETIC_SCHEME               ,16  ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_ICE_SUPERSAT_SLOPE           ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_CG_RELHUM_MAX                ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_OPEN_WATER_KINETIC           ,16  ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_SUBL_SKIN_MM                 ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_SOIL_KINETIC                 ,16  ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_SOIL_DIFFUSION               ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_SOIL_VAPOR_DIFFUSION         ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_CANOPY_EQUILIBRATION         ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_SNOWMELT_EQUILIBRATION       ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_NSS_LEAF_WATER_PER_LAI       ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_NSS_LEAF_PATH_LENGTH         ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_NSS_LEAF_RB                  ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_AQUIFER_MIXING_WATER_MM      ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_NUM                          ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_BALANCE_ABORT_NBAD           ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_RESID_ABORT_NBAD             ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_LULCC_ABORT_NBAD             ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_NAMES                        ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_TYPES                        ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_MRAT                         ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_REF_RATIO                    ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_INIT_DELTA                   ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_REACTIVE_DECAY_RATE          ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_USE_SOIL_INIT                ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_SOIL_INIT_FILE               ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_SOIL_INIT_VARS               ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
+      CALL mpi_bcast (DEF_TRACER_PARAM_FILES                  ,len(DEF_TRACER_PARAM_FILES),mpi_character ,p_address_master ,p_comm_glb ,p_err)
+#if defined BGC
       CALL mpi_bcast (DEF_file_GIEMS                         ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
       CALL mpi_bcast (DEF_wetland_finundation_scheme         ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
+#endif
 #endif
 
       CALL mpi_bcast (DEF_HISTORY_IN_VECTOR                  ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
@@ -2226,7 +2168,6 @@ CONTAINS
       CALL mpi_bcast (DEF_forcing%CBL_tintalgo               ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
       CALL mpi_bcast (DEF_forcing%CBL_dtime                  ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
       CALL mpi_bcast (DEF_forcing%CBL_offset                 ,1   ,mpi_integer   ,p_address_master ,p_comm_glb ,p_err)
-      ! (per-tracer forcing fields removed; now per-species via MOD_Tracer_ForcingInput)
 #endif
 
       CALL sync_hist_vars (set_defaults = .true.)
@@ -2557,10 +2498,8 @@ CONTAINS
 
    END FUNCTION regional_unitcatchment_file
 
-   ! ---------------
    FUNCTION get_unitcatchment_file () RESULT (fname)
 
-   ! The unit-catchment network the run actually uses.
    IMPLICIT NONE
    character(len=256) :: fname
 
@@ -2891,6 +2830,110 @@ CONTAINS
       ENDIF
 #endif
       CALL sync_hist_vars_one (DEF_hist_vars%ndep_to_sminn                   , set_defaults)
+      CALL sync_hist_vars_one (DEF_hist_vars%farea_burned, set_defaults, default_value=.true.)
+      CALL sync_hist_vars_one (DEF_hist_vars%baf_crop, set_defaults, default_value=.true.)
+      CALL sync_hist_vars_one (DEF_hist_vars%baf_peatf, set_defaults, default_value=.true.)
+      CALL sync_hist_vars_one (DEF_hist_vars%nfire, set_defaults, default_value=.true.)
+      CALL sync_hist_vars_one (DEF_hist_vars%fuelc, set_defaults, default_value=.true.)
+      CALL sync_hist_vars_one (DEF_hist_vars%btran2, set_defaults, default_value=.true.)
+      CALL sync_hist_vars_one (DEF_hist_vars%pft_fire_closs, set_defaults, default_value=.true.)
+      CALL sync_hist_vars_one (DEF_hist_vars%pft_fire_nloss, set_defaults, default_value=.true.)
+      CALL sync_hist_vars_one (DEF_hist_vars%col_fire_closs, set_defaults, default_value=.true.)
+      CALL sync_hist_vars_one (DEF_hist_vars%col_fire_nloss, set_defaults, default_value=.true.)
+      CALL sync_hist_vars_one (DEF_hist_vars%somc_fire, set_defaults, default_value=.true.)
+      CALL sync_hist_vars_one (DEF_hist_vars%litfire, set_defaults, default_value=.true.)
+      CALL sync_hist_vars_one (DEF_hist_vars%somfire, set_defaults, default_value=.true.)
+      CALL sync_hist_vars_one (DEF_hist_vars%totfire, set_defaults, default_value=.true.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_leafc_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_frootc_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livestemc_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadstemc_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livecrootc_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadcrootc_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_leafc_storage_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_frootc_storage_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livestemc_storage_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadstemc_storage_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livecrootc_storage_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadcrootc_storage_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_gresp_storage_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_leafc_xfer_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_frootc_xfer_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livestemc_xfer_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadstemc_xfer_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livecrootc_xfer_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadcrootc_xfer_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_gresp_xfer_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livestemc_to_deadstemc_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livecrootc_to_deadcrootc_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_leafc_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_frootc_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livestemc_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadstemc_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livecrootc_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadcrootc_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_leafc_storage_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_frootc_storage_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livestemc_storage_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadstemc_storage_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livecrootc_storage_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadcrootc_storage_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_gresp_storage_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_leafc_xfer_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_frootc_xfer_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livestemc_xfer_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadstemc_xfer_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livecrootc_xfer_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadcrootc_xfer_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_gresp_xfer_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_leafn_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_frootn_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livestemn_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadstemn_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livecrootn_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadcrootn_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_leafn_storage_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_frootn_storage_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livestemn_storage_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadstemn_storage_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livecrootn_storage_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadcrootn_storage_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_leafn_xfer_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_frootn_xfer_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livestemn_xfer_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadstemn_xfer_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livecrootn_xfer_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadcrootn_xfer_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livestemn_to_deadstemn_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livecrootn_to_deadcrootn_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_retransn_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_leafn_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_frootn_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livestemn_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadstemn_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livecrootn_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadcrootn_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_leafn_storage_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_frootn_storage_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livestemn_storage_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadstemn_storage_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livecrootn_storage_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadcrootn_storage_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_leafn_xfer_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_frootn_xfer_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livestemn_xfer_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadstemn_xfer_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_livecrootn_xfer_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_deadcrootn_xfer_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_retransn_to_litter_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_litr1_c_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_litr1_n_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_litr2_c_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_litr2_n_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_litr3_c_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_litr3_n_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_cwd_c_to_fire, set_defaults, default_value=.false.)
+      CALL sync_hist_vars_one (DEF_hist_vars%m_cwd_n_to_fire, set_defaults, default_value=.false.)
       IF(DEF_USE_NITRIF)THEN
          CALL sync_hist_vars_one (DEF_hist_vars%CONC_O2_UNSAT                , set_defaults)
          CALL sync_hist_vars_one (DEF_hist_vars%O2_DECOMP_DEPTH_UNSAT        , set_defaults)
@@ -3087,17 +3130,24 @@ CONTAINS
 
    END SUBROUTINE sync_hist_vars
 
-   SUBROUTINE sync_hist_vars_one (onoff, set_defaults)
+   SUBROUTINE sync_hist_vars_one (onoff, set_defaults, default_value)
 
    USE MOD_SPMD_Task
    IMPLICIT NONE
 
    logical, intent(inout) :: onoff
    logical, intent(in)    :: set_defaults
+   logical, intent(in), optional :: default_value
 
       IF (p_is_master) THEN
          IF (set_defaults) THEN
-            onoff = DEF_HIST_vars_out_default
+            ! Explicit field defaults override the global default only during initialization.
+            ! Subsequent synchronization preserves values read from the history namelist.
+            IF (present(default_value)) THEN
+               onoff = default_value
+            ELSE
+               onoff = DEF_HIST_vars_out_default
+            ENDIF
          ENDIF
       ENDIF
 

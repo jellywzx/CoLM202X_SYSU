@@ -147,7 +147,9 @@ PROGRAM MKSRFDATA
 
       CALL single_srfdata_final ()
       write(*,*)  'Successful in surface data making.'
-      CALL CoLM_stop()
+      ! Normal end of the single-point run. CoLM_stop now ends with STOP 1 (error exit),
+      ! so calling it here made every successful single-point mksrfdata exit with 1.
+      STOP
 #endif
 
       IF (USE_srfdata_from_larger_region) THEN
@@ -435,7 +437,6 @@ PROGRAM MKSRFDATA
       CALL pixelset_save_to_file  (dir_landdata, 'landurban', landurban, lc_year)
 #endif
 
-      ! Routing network for the land domain only (see DEF_UnitCatchment_regional).
       IF (DEF_UnitCatchment_regional) THEN
          CALL unitcatchment_regional_build ()
       ENDIF
@@ -493,7 +494,9 @@ IF (.not. (skip_rest)) THEN
 
       CALL Aggregation_ForestHeight    (grid_htop, dir_rawdata, dir_landdata, lc_year)
 
-      CALL Aggregation_CanopyStructure (grid_htop, dir_rawdata, dir_landdata, lc_year)
+      IF (DEF_Interception_scheme == 8) THEN
+         CALL Aggregation_CanopyStructure (grid_htop, dir_rawdata, dir_landdata, lc_year)
+      ENDIF
 
       CALL Aggregation_Topography      (grid_topo, dir_rawdata, dir_landdata, lc_year)
 
