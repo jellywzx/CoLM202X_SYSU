@@ -333,6 +333,9 @@ class SedimentStaticChecks(unittest.TestCase):
         counted = averaging.split("IF (iter_sed == 1) THEN", 1)[1].split("ENDIF", 1)[0]
         self.assertIn("sum_rivout_signed_local", counted)
         self.assertIn("sum_rivout_abs_local", counted)
+        assignment = "sed_flow_cancel_ratio = 1._r8 - min(abs(avg_rivout) / avg_abs_rivout, 1._r8)"
+        self.assertIn(assignment, counted)
+        self.assertLess(counted.index(assignment), counted.index("max_flow_cancel_local"))
         self.assertIn("n_flow_cancel_local", counted)
 
     def test_cap_deposition_is_integrated_once_per_interval(self) -> None:

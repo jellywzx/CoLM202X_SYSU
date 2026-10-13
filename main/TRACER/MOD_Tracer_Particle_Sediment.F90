@@ -1077,6 +1077,7 @@ CONTAINS
                   sum_rivout_signed_local = sum_rivout_signed_local + avg_rivout
                   sum_rivout_abs_local = sum_rivout_abs_local + avg_abs_rivout
                   IF (avg_abs_rivout > CFL_RIVOUT_EPS) THEN
+                     sed_flow_cancel_ratio = 1._r8 - min(abs(avg_rivout) / avg_abs_rivout, 1._r8)
                      max_flow_cancel_local = max(max_flow_cancel_local, sed_flow_cancel_ratio)
                      IF (sed_flow_cancel_ratio > 0.5_r8) n_flow_cancel_local = n_flow_cancel_local + 1
                   ENDIF
