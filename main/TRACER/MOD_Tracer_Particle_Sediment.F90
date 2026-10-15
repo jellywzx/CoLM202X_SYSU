@@ -419,9 +419,7 @@ CONTAINS
       sed_push_groups_checked = .false.
       IF (.not. sediment_particle_enabled()) RETURN
 
-      IF (p_is_io) THEN
-         WRITE(*,*) 'Initializing sediment module...'
-      ENDIF
+      IF (p_is_master) WRITE(*,*) 'Initializing sediment module...'
 
       ! Set species-local defaults.  Overrides come from the tracer parameter
       ! file selected with DEF_TRACER_PARAM_FILES = 'SEDIMENT:<path>'.
@@ -475,9 +473,7 @@ CONTAINS
       CALL mpi_bcast(nlfp_sed, 1, MPI_INTEGER, p_address_master, p_comm_glb, p_err)
 #endif
 
-      IF (p_is_io) THEN
-         WRITE(*,*) 'Sediment module: nsed=', nsed, ' nlfp_sed=', nlfp_sed
-      ENDIF
+      IF (p_is_master) WRITE(*,*) 'Sediment module: nsed=', nsed, ' nlfp_sed=', nlfp_sed
 
       CALL read_sediment_parameter_file()
       CALL validate_sediment_parameters()
@@ -497,9 +493,7 @@ CONTAINS
       IF (p_is_worker) CALL initialize_sediment_diag_stations()
 #endif
 
-      IF (p_is_io) THEN
-         WRITE(*,*) 'Sediment module initialized successfully.'
-      ENDIF
+      IF (p_is_master) WRITE(*,*) 'Sediment module initialized successfully.'
 
    END SUBROUTINE grid_sediment_init
 
@@ -628,8 +622,8 @@ CONTAINS
          ENDDO
       ENDIF
 
-      IF (p_is_io) WRITE(*,'(A,A)') 'Sediment parameters loaded from ', trim(file_param)
-      IF (p_is_io) WRITE(*,'(A)') &
+      IF (p_is_master) WRITE(*,'(A,A)') 'Sediment parameters loaded from ', trim(file_param)
+      IF (p_is_master) WRITE(*,'(A)') &
          'Sediment cfl_adv is retained for restart compatibility but inactive; donor inventory limits advection.'
 
    END SUBROUTINE read_sediment_parameter_file
@@ -2439,7 +2433,6 @@ CONTAINS
       allocate(sDiam(nsed))
       IF (allocated(sDiam_from_param)) THEN
          sDiam(:) = sDiam_from_param(:)
-         IF (p_is_io) WRITE(*,*) 'Grain diameters (m) from sediment tracer parameter file:', sDiam
          RETURN
       ENDIF
       str = trim(adjustl(SED_DEFAULT_DIAMETER))
@@ -2481,7 +2474,6 @@ CONTAINS
          ENDIF
       ENDDO
 
-      IF (p_is_io) WRITE(*,*) 'Grain diameters (m):', sDiam
 
    END SUBROUTINE parse_grain_diameters
 
@@ -2501,7 +2493,6 @@ CONTAINS
                     + sTmp*sTmp) - sTmp)
       ENDDO
 
-      IF (p_is_io) WRITE(*,*) 'Settling velocities (m/s):', setvel
 
    END SUBROUTINE calc_settling_velocities
 
@@ -2533,7 +2524,7 @@ CONTAINS
       IF (allocated(sed_slope)) sed_slope = max(sed_slope, 0._r8)
       CALL normalize_sed_frc()
 
-      IF (p_is_io) WRITE(*,*) 'Sediment static data read successfully.'
+      IF (p_is_master) WRITE(*,*) 'Sediment static data read successfully.'
 
    END SUBROUTINE read_sediment_static_data
 
@@ -3749,7 +3740,7 @@ CONTAINS
                'ERROR: levee/bifurcation sediment restart requires a complete sediment transaction.'
             CALL CoLM_stop()
          ENDIF
-         IF (p_is_io) WRITE(*,*) 'Sediment restart variables not found, using initial state.'
+         IF (p_is_master) WRITE(*,*) 'Sediment restart variables not found, using initial state.'
          RETURN
       ENDIF
 
