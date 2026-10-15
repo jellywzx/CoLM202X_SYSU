@@ -111,6 +111,8 @@ MODULE MOD_Vars_Global
    real(r8) :: zi_soi(1:nl_soil)                   ! interface level below a zsoi level [m]
 
    real(r8), parameter :: spval    = -1.e36_r8     ! missing value
+   ! Per-rank counts of first-step canopy observation-height corrections (u, t, q).
+   integer :: obs_height_adjust_counts(3) = 0
    integer , parameter :: spval_i4 = -9999         ! missing value
    real(r8), parameter :: PI       = 4*atan(1.)    ! pi value
    real(r8), parameter :: deg2rad  = 1.745329251994330e-2_r8 ! degree to radius

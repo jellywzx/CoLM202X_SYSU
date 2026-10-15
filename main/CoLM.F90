@@ -162,6 +162,7 @@ PROGRAM CoLM
    integer :: lc_year, lai_year, restart_lc_year
    integer :: month, mday, year_p, month_p, mday_p, month_prev, mday_prev
    integer :: n_spinupcycle, i_spinupcycle, istep
+   integer :: obs_height_adjust_global(3)
 #if (defined TRACER) && (defined CaMa_Flood)
    integer :: itrc_cama
 #endif
@@ -463,6 +464,7 @@ PROGRAM CoLM
       ! ======================================================================
 
       istep   = 1
+      obs_height_adjust_counts = 0
       idate   = sdate
       itstamp = ststamp
 
@@ -553,6 +555,27 @@ PROGRAM CoLM
 #else
             CALL CoLMDRIVER (idate,deltim,dolai,doalb,dosst,oroflag)
 #endif
+         ENDIF
+
+         ! Leaf routines count automatic observation-height corrections on the
+         ! first step. Aggregate once across MPI ranks rather than printing one
+         ! warning for every affected land patch.
+         IF (istep == 1) THEN
+#ifdef USEMPI
+            CALL mpi_reduce(obs_height_adjust_counts, obs_height_adjust_global, 3, &
+                            MPI_INTEGER, MPI_SUM, p_address_master, p_comm_glb, p_err)
+#else
+            obs_height_adjust_global = obs_height_adjust_counts
+#endif
+            IF (p_is_master) THEN
+               IF (ANY(obs_height_adjust_global > 0)) THEN
+                  WRITE(*,'(A,3(A,I0),A)') &
+                     'Warning: forcing observation heights raised to canopy top + 1 m (first-step events):', &
+                     ' u=', obs_height_adjust_global(1), &
+                     ', t=', obs_height_adjust_global(2), &
+                     ', q=', obs_height_adjust_global(3), '.'
+               ENDIF
+            ENDIF
          ENDIF
 
 #if (defined CatchLateralFlow)
