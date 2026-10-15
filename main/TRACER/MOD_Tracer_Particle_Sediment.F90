@@ -1900,8 +1900,11 @@ CONTAINS
             sed_acc_protected_end(i) = protected_end(i)
          ENDIF
          sed_acc_time(i)      = sed_acc_time(i)      + dt
+         sed_acc_v2(i)        = sed_acc_v2(i)        + veloc(i)**2    * dt
          sed_acc_wdsrf(i)     = sed_acc_wdsrf(i)     + wdsrf(i)       * dt
          sed_acc_rivsto(i)    = sed_acc_rivsto(i)    + rivsto_input(i)* dt
+         sed_acc_rivout(i)    = sed_acc_rivout(i)    + rivout_fc(i)   * dt
+         sed_acc_abs_rivout(i)= sed_acc_abs_rivout(i)+ abs(rivout_fc(i)) * dt
          sed_acc_floodarea(i) = sed_acc_floodarea(i) + floodarea(i)   * dt
          IF (DEF_USE_LEVEE) THEN
             IF (.not. ieee_is_finite(protected_area(i)) .or. protected_area(i) < 0._r8) &
