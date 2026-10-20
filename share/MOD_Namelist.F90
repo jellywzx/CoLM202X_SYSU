@@ -238,7 +238,7 @@ MODULE MOD_Namelist
 ! ----- Part 11: parameterization schemes -----
 ! ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   integer :: DEF_Interception_scheme = 8  ! Preserve prior CoLM2024 interception default
+   integer :: DEF_Interception_scheme = 1   ! Preserve prior CoLM2024 interception default
    real(r8) :: DEF_MATSIRO_CWCAP_SCALE = 1.0_r8
 
    ! ----- SOIL parameters and supercool water setting ------

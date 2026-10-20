@@ -2687,7 +2687,7 @@ CONTAINS
       IF (diam >= 0.00303_r8) THEN
          cA = 80.9_r8
       ELSEIF (diam >= 0.00118_r8) THEN
-         cA = 134.6_r8;  cB = 31._r8 / 22._r8
+         cA = 134.6_r8;  cB = 31._r8 / 32._r8
       ELSEIF (diam >= 0.000565_r8) THEN
          cA = 55._r8
       ELSEIF (diam >= 0.000065_r8) THEN
