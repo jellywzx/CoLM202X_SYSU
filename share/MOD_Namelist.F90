@@ -12,7 +12,6 @@ MODULE MOD_Namelist
 !-----------------------------------------------------------------------
 
    USE MOD_Precision, only: r8
-   USE, INTRINSIC :: ieee_arithmetic, ONLY: ieee_is_finite
    IMPLICIT NONE
    SAVE
 
@@ -239,7 +238,6 @@ MODULE MOD_Namelist
 ! ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
    integer :: DEF_Interception_scheme = 1   ! Preserve prior CoLM2024 interception default
-   real(r8) :: DEF_MATSIRO_CWCAP_SCALE = 1.0_r8
 
    ! ----- SOIL parameters and supercool water setting ------
    integer :: DEF_THERMAL_CONDUCTIVITY_SCHEME = 4  ! Options for soil thermal conductivity schemes
@@ -285,7 +283,7 @@ MODULE MOD_Namelist
    ! ----- Account for vegetation snow process -----
    ! NOTE: This option will be activated in the new release, accompanied by
    !       a new set of canopy structure data, include the snow-free LAI.
-   logical :: DEF_VEG_SNOW = .true.
+   logical :: DEF_VEG_SNOW = .false.
 
    ! ----- Variably Saturated Flow Soil Water -----
    logical :: DEF_USE_VariablySaturatedFlow = .true.
@@ -326,7 +324,7 @@ MODULE MOD_Namelist
    ! ----- CaMa-Flood -----
    character(len=256) :: DEF_CaMa_Namelist = 'null'
    character(len=256) :: DEF_CaMa_Restart_file = 'null'
-   logical :: DEF_CaMa_FloodFeedback = .true.
+   logical :: DEF_CaMa_FloodFeedback = .false.
    logical :: DEF_CaMa_StrictDomain = .false.
 
    ! ----- lateral flow related -----
@@ -339,7 +337,7 @@ MODULE MOD_Namelist
    logical  :: DEF_USE_EstimatedRiverDepth  = .true.
    integer  :: DEF_Reservoir_Method         = 0
    real(r8) :: DEF_GRIDBASED_ROUTING_MAX_DT = 3600.
-   logical  :: DEF_GRIDBASED_ROUTING_MOMENTUM_DT_LIMIT = .true.
+   logical  :: DEF_GRIDBASED_ROUTING_MOMENTUM_DT_LIMIT = .false.
    logical  :: DEF_GridRiverLake_FloodFeedback = .false.
    logical  :: DEF_GridRiverLake_FloodplainStorageFix = .false.
    real(r8) :: DEF_GridRiverLake_FloodInfiltMax = 5._r8
@@ -522,6 +520,7 @@ MODULE MOD_Namelist
 
    logical  :: DEF_HISTORY_IN_VECTOR            = .false.
 
+   logical  :: DEF_HIST_grid_as_model_mesh      = .false.
    logical  :: DEF_HIST_grid_as_forcing         = .false.
    real(r8) :: DEF_HIST_lon_res                 = 0.5
    real(r8) :: DEF_HIST_lat_res                 = 0.5
@@ -1405,6 +1404,7 @@ CONTAINS
       DEF_HISTORY_IN_VECTOR,                  &
       DEF_HIST_lon_res,                       &
       DEF_HIST_lat_res,                       &
+      DEF_HIST_grid_as_model_mesh,            &
       DEF_HIST_grid_as_forcing,               &
       DEF_WRST_FREQ,                          &
       DEF_HIST_FREQ,                          &
@@ -1855,11 +1855,22 @@ CONTAINS
          ENDIF
 #endif
 
+! ----- history ---- Macros&Namelist conflicts and dependency management
+#ifndef GRIDBASED
+         IF (DEF_hist_grid_as_model_mesh) THEN
+            DEF_hist_grid_as_model_mesh = .false.
+            write(*,*) '                  *****                                                         '
+            write(*,*) 'Warning: DEF_hist_grid_as_model_mesh only effective for longitude-latitude mesh.'
+            write(*,*) 'DEF_hist_grid_as_model_mesh will be set to false automatically.                 '
+         ENDIF
+#endif
+
 ! ----- [Complement IF needed] ----- Macros&Namelist conflicts and dependency management
 
 
 ! -----END Macros&Namelist conflicts and dependency management -----
 ! ===============================================================
+
       CALL print_compile_configuration()
 
       ENDIF
@@ -2113,6 +2124,7 @@ CONTAINS
       CALL mpi_bcast (DEF_HIST_lon_res                       ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
       CALL mpi_bcast (DEF_HIST_lat_res                       ,1   ,mpi_real8     ,p_address_master ,p_comm_glb ,p_err)
 
+      CALL mpi_bcast (DEF_HIST_grid_as_model_mesh            ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
       CALL mpi_bcast (DEF_HIST_grid_as_forcing               ,1   ,mpi_logical   ,p_address_master ,p_comm_glb ,p_err)
 
       CALL mpi_bcast (DEF_WRST_FREQ                          ,256 ,mpi_character ,p_address_master ,p_comm_glb ,p_err)
@@ -2248,7 +2260,6 @@ CONTAINS
       CALL sync_hist_vars (set_defaults = .false.)
 
    END SUBROUTINE read_namelist
-
 
    SUBROUTINE print_compile_configuration()
    !-----------------------------------------------------------------------
@@ -2486,9 +2497,6 @@ CONTAINS
 
    END SUBROUTINE print_compile_configuration
 
-
-
-   ! ---------------
    FUNCTION regional_unitcatchment_file () RESULT (fname)
 
    IMPLICIT NONE

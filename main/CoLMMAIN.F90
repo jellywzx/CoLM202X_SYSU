@@ -952,9 +952,6 @@ SUBROUTINE CoLMMAIN ( &
 
 #if (defined LULC_USGS || defined LULC_IGBP)
             CALL LEAF_interception_wrap (deltim,dewmx,forc_us,forc_vs,chil,sigf,&
-#ifdef extend_interception
-                      fsno,&
-#endif
                       lai,sai,forc_t,&
                       tleaf,prc_rain,prc_snow,prl_rain,prl_snow,qflx_irrig_sprinkler,bifall,&
                       patchclass,ncd(ipatch),ncw(ipatch),bcw(ipatch),htop,&
@@ -972,9 +969,6 @@ SUBROUTINE CoLMMAIN ( &
 
 #if (defined LULC_IGBP_PFT || defined LULC_IGBP_PC)
             CALL LEAF_interception_pftwrap (ipatch,deltim,dewmx,forc_us,forc_vs,forc_t,&
-#ifdef extend_interception
-                      fsno,&
-#endif
                       prc_rain,prc_snow,prl_rain,prl_snow,qflx_irrig_sprinkler,bifall,&
                       ldew,ldew_rain,ldew_snow,z0m,forc_hgt_u,pg_rain,&
 #ifdef TRACER
@@ -990,9 +984,6 @@ SUBROUTINE CoLMMAIN ( &
 
          ELSE
             CALL LEAF_interception_wrap (deltim,dewmx,forc_us,forc_vs,chil,sigf,&
-#ifdef extend_interception
-                      fsno,&
-#endif
                       lai,sai,forc_t,&
                       tleaf,prc_rain,prc_snow,prl_rain,prl_snow,qflx_irrig_sprinkler,bifall,&
                       patchclass,ncd(ipatch),ncw(ipatch),bcw(ipatch),htop,&
@@ -1175,16 +1166,6 @@ SUBROUTINE CoLMMAIN ( &
 #ifdef extend_interception
 #ifdef CANOPY_FLOOD_FEEDBACK
              ,flddepth          ,fldfrc            ,fevpg_fld                            &
-#endif
-#if (defined LULC_IGBP_PFT || defined LULC_IGBP_PC)
-             ,canopy_phase_heat, canopy_phase_heat_p                                &
-#else
-             ,canopy_phase_heat                                                    &
-#endif
-#else
-#if (defined CaMa_Flood) || (defined GridRiverLakeFlow)
-             ,flddepth          ,fldfrc            ,fevpg_fld                            &
-#endif
 #endif
 #ifdef TRACER
              ,canopy_smelt_mass_th = canopy_smelt_mass_th, &
@@ -1380,136 +1361,72 @@ SUBROUTINE CoLMMAIN ( &
             qcharge_trc = (wa - wa_old_trc + etroot_aquifer_trc + &
                max(rsub_source_aquifer_trc, 0._r8)) / max(deltim, trc_tiny)
 
+            ! Snow-layer sections start at lbsn, not snl+1: with no snow,
+            ! snow_qout_layer_trc(1:0) is legal but trips ifort -check bounds.
             IF (patchtype == 2 .and. .not. DEF_USE_Dynamic_Wetland) THEN
-               IF (snl < 0) THEN
-                  CALL tracer_wetland(ipatch, deltim, snl, nl_soil, &
-                     rsur, &
-                     qseva, qsdew, qsubl, qfros, &
-                     qseva_soil, qsdew_soil, qsubl_soil, qfros_soil, &
-                     qseva_snow, qsdew_snow, qsubl_snow, qfros_snow, &
-                     etr, sm, fsno, DEF_SPLIT_SOILSNOW, &
-                     wliq_soisno(snl+1:nl_soil), wice_soisno(snl+1:nl_soil), &
-                     wliq_soisno_old_trc, wice_soisno_old_trc, &
-                     wa, wa_old_trc, wdsrf, wdsrf_old_trc, &
-                     wetwat, wetwat_old_trc, pg_rain, pg_snow, &
-                     t_soisno(snl+1:nl_soil), porsl(1:nl_soil), &
-                     dz_soisno(snl+1:nl_soil), &
-                     qflx_irrig_drip + qflx_irrig_flood + qflx_irrig_paddy, &
-                     forc_us, forc_vs, waterstorage_trc_ground, &
-                     snow_qout_layer = snow_qout_layer_trc(snl+1:0), &
-                     forc_q_frac = forc_q, &
-                     forc_psrf_frac = forc_psrf, &
-                     tleaf_frac = tleaf, &
-                     lai_frac = lai, &
-                     rst_frac = rst, &
-                     ra_frac = raw_trc, &
-                     dz_sno_frac = dz_soisno(snl+1:0))
-               ELSE
-                  ! Intel bounds checking rejects the empty section
-                  ! snow_qout_layer_trc(1:0) when there are no snow layers.
-                  CALL tracer_wetland(ipatch, deltim, snl, nl_soil, &
-                     rsur, &
-                     qseva, qsdew, qsubl, qfros, &
-                     qseva_soil, qsdew_soil, qsubl_soil, qfros_soil, &
-                     qseva_snow, qsdew_snow, qsubl_snow, qfros_snow, &
-                     etr, sm, fsno, DEF_SPLIT_SOILSNOW, &
-                     wliq_soisno(snl+1:nl_soil), wice_soisno(snl+1:nl_soil), &
-                     wliq_soisno_old_trc, wice_soisno_old_trc, &
-                     wa, wa_old_trc, wdsrf, wdsrf_old_trc, &
-                     wetwat, wetwat_old_trc, pg_rain, pg_snow, &
-                     t_soisno(snl+1:nl_soil), porsl(1:nl_soil), &
-                     dz_soisno(snl+1:nl_soil), &
-                     qflx_irrig_drip + qflx_irrig_flood + qflx_irrig_paddy, &
-                     forc_us, forc_vs, waterstorage_trc_ground, &
-                     forc_q_frac = forc_q, &
-                     forc_psrf_frac = forc_psrf, &
-                     tleaf_frac = tleaf, &
-                     lai_frac = lai, &
-                     rst_frac = rst, &
-                     ra_frac = raw_trc)
-               ENDIF
+               CALL tracer_wetland(ipatch, deltim, snl, nl_soil, &
+                  rsur, &
+                  qseva, qsdew, qsubl, qfros, &
+                  qseva_soil, qsdew_soil, qsubl_soil, qfros_soil, &
+                  qseva_snow, qsdew_snow, qsubl_snow, qfros_snow, &
+                  etr, sm, fsno, DEF_SPLIT_SOILSNOW, &
+                  wliq_soisno(snl+1:nl_soil), wice_soisno(snl+1:nl_soil), &
+                  wliq_soisno_old_trc, wice_soisno_old_trc, &
+                  wa, wa_old_trc, wdsrf, wdsrf_old_trc, &
+                  wetwat, wetwat_old_trc, pg_rain, pg_snow, &
+                  t_soisno(snl+1:nl_soil), porsl(1:nl_soil), &
+                  dz_soisno(snl+1:nl_soil), &
+                  qflx_irrig_drip + qflx_irrig_flood + qflx_irrig_paddy, &
+                  forc_us, forc_vs, waterstorage_trc_ground, &
+                  snow_qout_layer = snow_qout_layer_trc(lbsn:0), &
+                  forc_q_frac = forc_q, &
+                  forc_psrf_frac = forc_psrf, &
+                  tleaf_frac = tleaf, &
+                  lai_frac = lai, &
+                  rst_frac = rst, &
+                  ra_frac = raw_trc, &
+                  dz_sno_frac = dz_soisno(lbsn:0))
             ELSE
-               IF (snl < 0) THEN
-                  CALL tracer_soil_water(ipatch, deltim, snl, nl_soil, &
-                     qlayer, qinfl, qcharge_trc, rsur, rsub, &
-                     qseva, qsdew, qsubl, qfros, &
-                     qseva_soil, qsdew_soil, qsubl_soil, qfros_soil, &
-                     qseva_snow, qsdew_snow, qsubl_snow, qfros_snow, &
-                     sm, fsno, DEF_SPLIT_SOILSNOW, &
-                     wliq_soisno(snl+1:nl_soil), wice_soisno(snl+1:nl_soil), &
-                     wliq_soisno_old_trc, wice_soisno_old_trc, &
-                     wa, wa_old_trc, wdsrf, wdsrf_old_trc, &
-                     wetwat, wetwat_old_trc, pg_rain, pg_snow, &
-                     wblc_ice_sink_trc, &
-                     etroot_actual_trc, etroot_aquifer_trc, &
-                     qflx_irrig_drip + qflx_irrig_flood + qflx_irrig_paddy, &
-                     waterstorage_trc_ground, &
-                     etroot_surface = etroot_surface_trc, dew_overflow = dew_overflow_trc, &
-                     frost_displaced = frost_displaced_trc, late_surface_runoff = late_runoff_trc, &
-                     rsub_source_layer = rsub_source_layer_trc, &
-                     rsub_source_surface = rsub_source_surface_trc, &
-                     rsub_source_aquifer = rsub_source_aquifer_trc, &
-                     imperv_evap_wdsrf = imperv_evap_wdsrf_trc, &
-                     imperv_evap_soil = imperv_evap_soil_trc, &
-                     imperv_subl_soil = imperv_subl_soil_trc, &
-                     snow_qout_layer = snow_qout_layer_trc(snl+1:0), &
-                     qgtop_solver = qgtop_trc, &
-                     tleaf_frac = tleaf, &
-                     t_soisno_frac = t_soisno(snl+1:nl_soil), &
-                     forc_q_frac = forc_q, &
-                     forc_psrf_frac = forc_psrf, &
-                     lai_frac = lai, &
-                     rst_frac = rst, &
-                     ra_frac = raw_trc, &
-                     rss_frac = rss, &
-                     dz_soi_frac = dz_soisno(1:nl_soil), &
-                     porsl_frac = porsl(1:nl_soil), &
-                     dz_sno_frac = dz_soisno(snl+1:0) &
-                     , permeable_soil = permeable_soil_trc &
+               CALL tracer_soil_water(ipatch, deltim, snl, nl_soil, &
+                  qlayer, qinfl, qcharge_trc, rsur, rsub, &
+                  qseva, qsdew, qsubl, qfros, &
+                  qseva_soil, qsdew_soil, qsubl_soil, qfros_soil, &
+                  qseva_snow, qsdew_snow, qsubl_snow, qfros_snow, &
+                  sm, fsno, DEF_SPLIT_SOILSNOW, &
+                  wliq_soisno(snl+1:nl_soil), wice_soisno(snl+1:nl_soil), &
+                  wliq_soisno_old_trc, wice_soisno_old_trc, &
+                  wa, wa_old_trc, wdsrf, wdsrf_old_trc, &
+                  wetwat, wetwat_old_trc, pg_rain, pg_snow, &
+                  wblc_ice_sink_trc, &
+                  etroot_actual_trc, etroot_aquifer_trc, &
+                  qflx_irrig_drip + qflx_irrig_flood + qflx_irrig_paddy, &
+                  waterstorage_trc_ground, &
+                  etroot_surface = etroot_surface_trc, dew_overflow = dew_overflow_trc, &
+                  frost_displaced = frost_displaced_trc, late_surface_runoff = late_runoff_trc, &
+                  rsub_source_layer = rsub_source_layer_trc, &
+                  rsub_source_surface = rsub_source_surface_trc, &
+                  rsub_source_aquifer = rsub_source_aquifer_trc, &
+                  imperv_evap_wdsrf = imperv_evap_wdsrf_trc, &
+                  imperv_evap_soil = imperv_evap_soil_trc, &
+                  imperv_subl_soil = imperv_subl_soil_trc, &
+                  snow_qout_layer = snow_qout_layer_trc(lbsn:0), &
+                  qgtop_solver = qgtop_trc, &
+                  tleaf_frac = tleaf, &
+                  t_soisno_frac = t_soisno(snl+1:nl_soil), &
+                  forc_q_frac = forc_q, &
+                  forc_psrf_frac = forc_psrf, &
+                  lai_frac = lai, &
+                  rst_frac = rst, &
+                  ra_frac = raw_trc, &
+                  rss_frac = rss, &
+                  dz_soi_frac = dz_soisno(1:nl_soil), &
+                  porsl_frac = porsl(1:nl_soil), &
+                  dz_sno_frac = dz_soisno(lbsn:0) &
+                  , permeable_soil = permeable_soil_trc &
 #ifdef GridRiverLakeFlow
-                     , flood_tracer_input = flood_input_tracer, flood_infil_water = qinfl_fld*deltim &
+                  , flood_tracer_input = flood_input_tracer, flood_infil_water = qinfl_fld*deltim &
 #endif
-                     )
-               ELSE
-                  CALL tracer_soil_water(ipatch, deltim, snl, nl_soil, &
-                     qlayer, qinfl, qcharge_trc, rsur, rsub, &
-                     qseva, qsdew, qsubl, qfros, &
-                     qseva_soil, qsdew_soil, qsubl_soil, qfros_soil, &
-                     qseva_snow, qsdew_snow, qsubl_snow, qfros_snow, &
-                     sm, fsno, DEF_SPLIT_SOILSNOW, &
-                     wliq_soisno(snl+1:nl_soil), wice_soisno(snl+1:nl_soil), &
-                     wliq_soisno_old_trc, wice_soisno_old_trc, &
-                     wa, wa_old_trc, wdsrf, wdsrf_old_trc, &
-                     wetwat, wetwat_old_trc, pg_rain, pg_snow, &
-                     wblc_ice_sink_trc, &
-                     etroot_actual_trc, etroot_aquifer_trc, &
-                     qflx_irrig_drip + qflx_irrig_flood + qflx_irrig_paddy, &
-                     waterstorage_trc_ground, &
-                     etroot_surface = etroot_surface_trc, dew_overflow = dew_overflow_trc, &
-                     frost_displaced = frost_displaced_trc, late_surface_runoff = late_runoff_trc, &
-                     rsub_source_layer = rsub_source_layer_trc, &
-                     rsub_source_surface = rsub_source_surface_trc, &
-                     rsub_source_aquifer = rsub_source_aquifer_trc, &
-                     imperv_evap_wdsrf = imperv_evap_wdsrf_trc, &
-                     imperv_evap_soil = imperv_evap_soil_trc, &
-                     imperv_subl_soil = imperv_subl_soil_trc, &
-                     qgtop_solver = qgtop_trc, &
-                     tleaf_frac = tleaf, &
-                     t_soisno_frac = t_soisno(snl+1:nl_soil), &
-                     forc_q_frac = forc_q, &
-                     forc_psrf_frac = forc_psrf, &
-                     lai_frac = lai, &
-                     rst_frac = rst, &
-                     ra_frac = raw_trc, &
-                     rss_frac = rss, &
-                     dz_soi_frac = dz_soisno(1:nl_soil), &
-                     porsl_frac = porsl(1:nl_soil), &
-                     permeable_soil = permeable_soil_trc &
-#ifdef GridRiverLakeFlow
-                     , flood_tracer_input = flood_input_tracer, flood_infil_water = qinfl_fld*deltim &
-#endif
-                     )
-               ENDIF
+                  )
 #ifdef GridRiverLakeFlow
                IF (allocated(flood_tracer_land_patch)) &
                   flood_tracer_land_patch(:,ipatch) = flood_input_tracer

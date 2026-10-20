@@ -217,21 +217,7 @@ $CROP
 ! 8. If defined, open Land use and land cover change mode.
 #undef LULCC
 
-! Retain optional extended interception support.
-#define extend_interception
-
 $TRACER
-! The extended canopy implementation requires tracer phase-change outputs.
-! Without TRACER, retain the standard interception and thermal interfaces.
-#ifndef TRACER
-#undef extend_interception
-#endif
-! Match the extended THERMAL dummy arguments for coupled flood evaporation.
-#if defined(extend_interception) && (defined(CaMa_Flood) || defined(GridRiverLakeFlow))
-#define CANOPY_FLOOD_FEEDBACK
-#else
-#undef CANOPY_FLOOD_FEEDBACK
-#endif
 #if (defined TRACER) && (defined Campbell_SOIL_MODEL)
 #error "TRACER requires vanGenuchten_Mualem_SOIL_MODEL"
 #endif

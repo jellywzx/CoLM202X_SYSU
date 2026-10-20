@@ -95,7 +95,6 @@ MODULE MOD_Tracer_Particle_Sediment
    real(r8), parameter :: SED_DEFAULT_PYLDPC = 2.0_r8
    real(r8), parameter :: SED_DEFAULT_DSYLUNIT = 1.0e-6_r8
 
-   real(r8), parameter :: MAX_SED_CONC = SED_DEFAULT_MAX_CONC ! Maximum suspended sediment concentration [m3/m3]
    real(r8), parameter :: SED_BEDLOAD_COEFF = 17._r8
    real(r8), parameter :: SED_PRECIP_THRESHOLD_MM_DAY = 10._r8 ! Min rain rate of a forcing step for hillslope yield [mm/day]
    real(r8), parameter :: EXCH_SHEARVEL_MIN = 1.e-4_r8

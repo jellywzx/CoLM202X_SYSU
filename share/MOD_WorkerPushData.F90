@@ -1098,8 +1098,6 @@ CONTAINS
 
       IF (p_is_worker) THEN
 
-         ! Every output column starts as missing, even with no source IDs.
-         vec_recv(:) = fillvalue
          ! Always allocate (zero-length if no requests) to avoid passing
          ! unallocated array to worker_push_data_uniq_real8.
          allocate (vec_recv_uniq (pushdata%num_req_uniq))
@@ -1111,13 +1109,13 @@ CONTAINS
 
          IF (pushdata%num_req_uniq > 0) THEN
 
+            vec_recv(:) = fillvalue
+
             DO j = 1, size(pushdata%addr_multi,2)
 
                sumarea = 0._r8
 
                DO i = 1, size(pushdata%addr_multi,1)
-                  ! Ignore zero/negative overlap areas as the batched path does.
-                  IF (pushdata%area_multi(i,j) <= 0._r8) CYCLE
                   val = vec_recv_uniq(pushdata%addr_multi(i,j))
                   IF (val /= fillvalue) THEN
                      IF (vec_recv(j) == fillvalue) THEN
@@ -1130,7 +1128,7 @@ CONTAINS
                ENDDO
 
                IF (trim(mode) == 'average') THEN
-                  IF (vec_recv(j) /= fillvalue .and. sumarea > 0._r8) THEN
+                  IF (vec_recv(j) /= fillvalue .and. sumarea > 0.) THEN
                      vec_recv(j) = vec_recv(j) / sumarea
                   ENDIF
                ENDIF
@@ -1430,8 +1428,6 @@ CONTAINS
                DO ipart = 1, remapdata%npart(iset)
                   iloc = remapdata%part_to(iset)%val(ipart)
                   area = remapdata%areapart(iset)%val(ipart)
-                  ! Negative and zero overlap areas cannot contribute mass.
-                  IF (area <= 0._r8) CYCLE
 
                   IF (vec_in(iloc) /= fillvalue) THEN
                      IF (vec_out(iset) == fillvalue) THEN
@@ -1444,7 +1440,7 @@ CONTAINS
                ENDDO
 
                IF (trim(mode) == 'average') THEN
-                  IF (vec_out(iset) /= fillvalue .and. sumarea > 0._r8) THEN
+                  IF (vec_out(iset) /= fillvalue .and. sumarea > 0.) THEN
                      vec_out(iset) = vec_out(iset) / sumarea
                   ENDIF
                ENDIF
