@@ -64,6 +64,7 @@ MODULE MOD_Tracer_Particle_Sediment
    real(r8), save :: sed_dt_max     ! Maximum morphology interval [s]
    real(r8), save :: sed_bed_depth  ! Initial named deposit-bed depth [m]
    real(r8), save :: sed_max_conc   ! Maximum total suspended sediment volume concentration [-]
+   logical, save :: sed_h1_experimental = .false. ! Opt-in Hatono H1
 
    real(r8), parameter :: SED_DEFAULT_LAMBDA = 0.4_r8
    real(r8), parameter :: SED_DEFAULT_LYRDPH = 0.05_r8
@@ -253,6 +254,7 @@ MODULE MOD_Tracer_Particle_Sediment
       real(r8) :: max_timestep_s = -1._r8
       real(r8) :: bed_depth = -1._r8
       real(r8) :: max_concentration = -1._r8
+      logical :: h1_experimental = .false.
    end type sediment_parameter_type
 
    integer, save :: sediment_itrc = 0
@@ -439,6 +441,7 @@ CONTAINS
       sed_dt_max = SED_DEFAULT_DT_MAX
       sed_bed_depth = SED_DEFAULT_BED_DEPTH
       sed_max_conc = SED_DEFAULT_MAX_CONC
+      sed_h1_experimental = .false.
 
       parafile = get_unitcatchment_file ()
 
@@ -601,6 +604,7 @@ CONTAINS
       IF (DEF_SEDIMENT%max_timestep_s > 0._r8) sed_dt_max = DEF_SEDIMENT%max_timestep_s
       IF (DEF_SEDIMENT%bed_depth > 0._r8) sed_bed_depth = DEF_SEDIMENT%bed_depth
       IF (DEF_SEDIMENT%max_concentration >= 0._r8) sed_max_conc = DEF_SEDIMENT%max_concentration
+      sed_h1_experimental = DEF_SEDIMENT%h1_experimental
 
       IF (DEF_SEDIMENT%grain_diameter(1) > 0._r8) THEN
          IF (nsed > MAX_SED_PARAM_CLASSES) THEN
@@ -3662,6 +3666,7 @@ CONTAINS
    character(len=16) :: cised, cilyr
    character(len=64) :: vname
       logical :: file_ok, has_schema, has_complete, has_canonical_mass
+       logical :: has_h1_meta
       logical :: has_river_tracer_commit
       logical :: has_any_sediment, legacy_nonzero
       logical :: legacy_state_nonzero
@@ -3678,6 +3683,7 @@ CONTAINS
       has_schema = .false.
       has_complete = .false.
       has_canonical_mass = .false.
+       has_h1_meta = .false.
       has_any_sediment = .false.
       has_river_tracer_commit = .false.
       schema_version = 0
@@ -3700,6 +3706,7 @@ CONTAINS
                has_river_tracer_commit = &
                   (nf90_inq_varid(ncid, 'trc_river_restart_complete', varid) == NF90_NOERR)
                has_complete = (nf90_inq_varid(ncid, 'sed_restart_complete_meta', varid) == NF90_NOERR)
+                has_h1_meta = (nf90_inq_varid(ncid, 'sed_h1_experimental_meta', varid) == NF90_NOERR)
                has_canonical_mass = (nf90_inq_varid(ncid, 'sedsto_1', varid) == NF90_NOERR)
                has_any_sediment = has_schema .or. has_complete .or. has_canonical_mass
                has_any_sediment = has_any_sediment .or. &
@@ -3724,6 +3731,7 @@ CONTAINS
 #ifdef USEMPI
       CALL mpi_bcast(file_ok, 1, MPI_LOGICAL, p_address_master, p_comm_glb, p_err)
       CALL mpi_bcast(has_schema, 1, MPI_LOGICAL, p_address_master, p_comm_glb, p_err)
+       CALL mpi_bcast(has_h1_meta, 1, MPI_LOGICAL, p_address_master, p_comm_glb, p_err)
       CALL mpi_bcast(has_complete, 1, MPI_LOGICAL, p_address_master, p_comm_glb, p_err)
       CALL mpi_bcast(has_canonical_mass, 1, MPI_LOGICAL, p_address_master, p_comm_glb, p_err)
       CALL mpi_bcast(schema_version, 1, MPI_INTEGER, p_address_master, p_comm_glb, p_err)
@@ -3752,6 +3760,10 @@ CONTAINS
 
       nread = 0
       meta_bad = .false.
+       ! An H1 restart must not silently resume the legacy numerical scheme.
+       IF (sed_h1_experimental .neqv. has_h1_meta) meta_bad = .true.
+       IF (has_h1_meta) CALL check_sediment_restart_scalar(file_restart, ncid, &
+          'sed_h1_experimental_meta', 1._r8, numucat, ucat_data_address, meta_bad)
       IF (has_schema .and. schema_version == 0) meta_bad = .true.
       IF ((DEF_USE_LEVEE .or. DEF_USE_BIFURCATION) .and. &
           schema_version /= SED_RESTART_SCHEMA_VERSION) meta_bad = .true.
@@ -4426,6 +4438,8 @@ CONTAINS
       CALL write_sediment_scalar_meta(file_restart, 'sed_restart_schema_meta', &
          real(merge(SED_RESTART_SCHEMA_VERSION, 2, DEF_USE_LEVEE .or. DEF_USE_BIFURCATION), r8))
       CALL write_sediment_scalar_meta(file_restart, 'sed_restart_complete_meta', 0._r8)
+       IF (sed_h1_experimental) &
+          CALL write_sediment_scalar_meta(file_restart, 'sed_h1_experimental_meta', 1._r8)
       IF (DEF_USE_LEVEE .or. DEF_USE_BIFURCATION) THEN
          CALL write_sediment_scalar_meta(file_restart, 'sed_use_levee_meta', &
             merge(1._r8, 0._r8, DEF_USE_LEVEE))
@@ -5230,6 +5244,7 @@ CONTAINS
    WRITE(*,'(A,ES20.10)')  'ignore_depth_m [m]           = ', sed_ignore_dph
    WRITE(*,'(A,ES20.10)')  'active_layer_depth [m]       = ', lyrdph
    WRITE(*,'(A,ES20.10)')  'bed_depth [m]                = ', sed_bed_depth
+   WRITE(*,'(A,L1)')       'h1_experimental              = ', sed_h1_experimental
 
    WRITE(*,'(A,ES20.10)')  'viscosity [m2/s]             = ', visKin
    WRITE(*,'(A,ES20.10)')  'von_karman                   = ', vonKar
