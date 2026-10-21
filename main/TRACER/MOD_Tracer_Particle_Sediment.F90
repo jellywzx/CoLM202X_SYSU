@@ -478,6 +478,14 @@ CONTAINS
       IF (p_is_master) WRITE(*,*) 'Sediment module: nsed=', nsed, ' nlfp_sed=', nlfp_sed
 
       CALL read_sediment_parameter_file()
+      ! Do not silently run legacy physics when the experimental flag is ON.
+      ! Remove this guard only after a complete, validated joint H1 operator
+      ! (ordinary/reverse/BIF bedload plus gross entrainment) is implemented.
+      IF (sed_h1_experimental) THEN
+         IF (p_is_io) WRITE(*,'(A)') &
+            'ERROR: h1_experimental is a design stub; joint H1 exchange is not yet implemented.'
+         CALL CoLM_stop('Hatono H1 experimental mode unavailable')
+      ENDIF
       CALL validate_sediment_parameters()
 
       CALL parse_grain_diameters()
