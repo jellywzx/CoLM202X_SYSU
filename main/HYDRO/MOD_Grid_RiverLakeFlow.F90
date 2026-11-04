@@ -381,6 +381,22 @@ CONTAINS
    logical,   allocatable :: ucatfilter(:)
    logical :: loop_active, next_loop_active
 #ifdef CoLMDEBUG
+   integer(i8) :: routing_clock_total_start, routing_clock_start, routing_clock_end, routing_clock_rate
+   real(r8) :: routing_time_total, routing_time_exchange, routing_time_allreduce
+   real(r8) :: routing_time_local, routing_time_sum(4), routing_time_max(4)
+   integer  :: routing_dt_diag_limiter, routing_dt_diag_ucid
+   integer  :: routing_dt_diag_x, routing_dt_diag_y, routing_dt_diag_next
+   integer  :: routing_dt_diag_substep, routing_dt_diag_owner
+   integer  :: routing_dt_diag_ints(6)
+   real(r8) :: routing_dt_diag_min, routing_dt_diag_global_min
+   real(r8) :: routing_dt_diag_cfl, routing_dt_diag_storage_dt, routing_dt_diag_momentum
+   real(r8) :: routing_dt_diag_water_storage, routing_dt_diag_downstream_flux
+   real(r8) :: routing_dt_diag_upstream_flux, routing_dt_diag_net_outflow
+   real(r8) :: routing_dt_diag_depth, routing_dt_diag_velocity
+   real(r8) :: routing_dt_diag_reals(12)
+   real(r8) :: routing_dt_cfl, routing_dt_storage, routing_dt_momentum
+   real(r8) :: routing_dt_water_storage
+   character(len=16) :: routing_dt_diag_label
    real(r8) :: totalvol_bef, totalvol_aft, totalrnof, totaldis
 #ifdef TRACER
    real(r8), allocatable :: trc_mass_bef(:), trc_mass_aft(:)
@@ -388,6 +404,29 @@ CONTAINS
 #endif
 #endif
 
+#ifdef CoLMDEBUG
+      CALL system_clock(count_rate = routing_clock_rate)
+      routing_time_total     = 0._r8
+      routing_time_exchange  = 0._r8
+      routing_time_allreduce = 0._r8
+      routing_time_local     = 0._r8
+      routing_dt_diag_min             = huge(1._r8)
+      routing_dt_diag_limiter         = 0
+      routing_dt_diag_ucid            = 0
+      routing_dt_diag_x               = 0
+      routing_dt_diag_y               = 0
+      routing_dt_diag_next            = 0
+      routing_dt_diag_substep         = 0
+      routing_dt_diag_cfl             = huge(1._r8)
+      routing_dt_diag_storage_dt      = huge(1._r8)
+      routing_dt_diag_momentum        = huge(1._r8)
+      routing_dt_diag_water_storage   = 0._r8
+      routing_dt_diag_downstream_flux = 0._r8
+      routing_dt_diag_upstream_flux   = 0._r8
+      routing_dt_diag_net_outflow     = 0._r8
+      routing_dt_diag_depth           = 0._r8
+      routing_dt_diag_velocity        = 0._r8
+#endif
 
       IF (p_is_worker) THEN
 
@@ -699,13 +738,25 @@ CONTAINS
             loop_active = any(dt_res > 0._r8)
          ENDIF
 
+#ifdef CoLMDEBUG
+         CALL system_clock(routing_clock_total_start)
+         routing_clock_start = routing_clock_total_start
+#endif
          DO WHILE (loop_active)
 
             ntimestep = ntimestep + 1
 
+#ifdef CoLMDEBUG
+            CALL system_clock(routing_clock_end)
+#endif
             CALL worker_push_data (push_next2ucat, wdsrf_ucat, wdsrf_next, fillvalue = spval)
             ! velocity in ocean or inland depression is assumed to be 0.
             CALL worker_push_data (push_next2ucat, veloc_riv,  veloc_next, fillvalue = 0.)
+#ifdef CoLMDEBUG
+            CALL system_clock(routing_clock_start)
+            routing_time_exchange = routing_time_exchange + &
+               real(routing_clock_start-routing_clock_end, r8) / real(routing_clock_rate, r8)
+#endif
 
             dt_all(:) = min(dt_res(:), 60.)
 
@@ -848,9 +899,17 @@ CONTAINS
 
             ENDDO
 
+#ifdef CoLMDEBUG
+            CALL system_clock(routing_clock_end)
+#endif
             CALL worker_push_data (push_ups2ucat, hflux_fc, hflux_sumups, fillvalue = 0., mode = 'sum')
             CALL worker_push_data (push_ups2ucat, mflux_fc, mflux_sumups, fillvalue = 0., mode = 'sum')
             CALL worker_push_data (push_ups2ucat, zgrad_dn, zgrad_sumups, fillvalue = 0., mode = 'sum')
+#ifdef CoLMDEBUG
+            CALL system_clock(routing_clock_start)
+            routing_time_exchange = routing_time_exchange + &
+               real(routing_clock_start-routing_clock_end, r8) / real(routing_clock_rate, r8)
+#endif
 
             IF (numucat > 0) THEN
                WHERE (ucatfilter)
@@ -902,8 +961,16 @@ CONTAINS
 
                ENDDO
 
+#ifdef CoLMDEBUG
+               CALL system_clock(routing_clock_end)
+#endif
                CALL worker_push_data (push_ups2ucat, hflux_resv, hflux_sumups, fillvalue = 0., mode = 'sum')
                CALL worker_push_data (push_ups2ucat, mflux_resv, mflux_sumups, fillvalue = 0., mode = 'sum')
+#ifdef CoLMDEBUG
+               CALL system_clock(routing_clock_start)
+               routing_time_exchange = routing_time_exchange + &
+                  real(routing_clock_start-routing_clock_end, r8) / real(routing_clock_rate, r8)
+#endif
 
                IF (numucat > 0) THEN
                   WHERE (ucatfilter)
@@ -919,11 +986,21 @@ CONTAINS
                IF (.not. ucatfilter(i)) CYCLE
 
                dt_this = dt_all(irivsys(i))
+#ifdef CoLMDEBUG
+               routing_dt_cfl     = huge(1._r8)
+               routing_dt_storage = huge(1._r8)
+               routing_dt_momentum = huge(1._r8)
+#endif
 
                ! constraint 1: CFL condition (only for rivers)
                IF (.not. is_built_resv(i)) THEN
                   IF ((veloc_riv(i) /= 0.) .or. (wdsrf_ucat(i) > 0.)) THEN
-                     dt_this = min(dt_this, topo_rivlen(i)/(abs(veloc_riv(i))+sqrt(grav*wdsrf_ucat(i)))*0.8)
+                     dt_this = min(dt_this, topo_rivlen(i) / &
+                        (abs(veloc_riv(i))+sqrt(grav*wdsrf_ucat(i))) * 0.8)
+#ifdef CoLMDEBUG
+                     routing_dt_cfl = topo_rivlen(i) / &
+                        (abs(veloc_riv(i))+sqrt(grav*wdsrf_ucat(i))) * 0.8
+#endif
                   ENDIF
                ENDIF
 
@@ -942,6 +1019,9 @@ CONTAINS
                   ENDIF
 
                   dt_this = min(dt_this, volwater / sum_hflux_riv(i))
+#ifdef CoLMDEBUG
+                  routing_dt_storage = volwater / sum_hflux_riv(i)
+#endif
 
                ENDIF
 
@@ -951,9 +1031,49 @@ CONTAINS
                       veloc_riv(i) * (sum_mflux_riv(i)-sum_zgrad_riv(i)) > 0._r8) THEN
                      dt_this = min(dt_this, &
                         abs(momen_riv(i) * topo_rivare(i) / (sum_mflux_riv(i)-sum_zgrad_riv(i))))
+#ifdef CoLMDEBUG
+                     routing_dt_momentum = &
+                        abs(momen_riv(i) * topo_rivare(i) / (sum_mflux_riv(i)-sum_zgrad_riv(i)))
+#endif
                   ENDIF
                ENDIF
 
+#ifdef CoLMDEBUG
+               IF (dt_this < dt_all(irivsys(i)) .and. dt_this < routing_dt_diag_min) THEN
+                  routing_dt_diag_min = dt_this
+                  IF (routing_dt_cfl <= routing_dt_storage .and. &
+                      routing_dt_cfl <= routing_dt_momentum) THEN
+                     routing_dt_diag_limiter = 1
+                  ELSEIF (routing_dt_storage <= routing_dt_momentum) THEN
+                     routing_dt_diag_limiter = 2
+                  ELSE
+                     routing_dt_diag_limiter = 3
+                  ENDIF
+                  IF (.not. is_built_resv(i)) THEN
+                     IF (DEF_USE_BIFURCATION .or. DEF_USE_LEVEE) THEN
+                        routing_dt_water_storage = volwater_ucat(i)
+                     ELSE
+                        routing_dt_water_storage = floodplain_curve(i)%volume(wdsrf_ucat(i))
+                     ENDIF
+                  ELSE
+                     routing_dt_water_storage = volresv(ucat2resv(i))
+                  ENDIF
+                  routing_dt_diag_ucid            = ucat_ucid(i)
+                  routing_dt_diag_x               = x_ucat(i)
+                  routing_dt_diag_y               = y_ucat(i)
+                  routing_dt_diag_next            = ucat_next(i)
+                  routing_dt_diag_substep         = ntimestep
+                  routing_dt_diag_cfl             = routing_dt_cfl
+                  routing_dt_diag_storage_dt      = routing_dt_storage
+                  routing_dt_diag_momentum        = routing_dt_momentum
+                  routing_dt_diag_water_storage   = routing_dt_water_storage
+                  routing_dt_diag_downstream_flux = hflux_fc(i)
+                  routing_dt_diag_upstream_flux   = hflux_sumups(i)
+                  routing_dt_diag_net_outflow     = sum_hflux_riv(i)
+                  routing_dt_diag_depth           = wdsrf_ucat(i)
+                  routing_dt_diag_velocity        = veloc_riv(i)
+               ENDIF
+#endif
                dt_all(irivsys(i)) = min(dt_this, dt_all(irivsys(i)))
 
             ENDDO
@@ -969,8 +1089,16 @@ CONTAINS
                      hflux_sumups(i) = -hflux_fc(i)
                   ENDIF
                ENDDO
+#ifdef CoLMDEBUG
+               CALL system_clock(routing_clock_end)
+#endif
                CALL worker_push_data(push_ups2ucat, hflux_sumups, mflux_sumups, &
                   fillvalue=0._r8, mode='sum')
+#ifdef CoLMDEBUG
+               CALL system_clock(routing_clock_start)
+               routing_time_exchange = routing_time_exchange + &
+                  real(routing_clock_start-routing_clock_end, r8) / real(routing_clock_rate, r8)
+#endif
                WHERE (ucatfilter)
                   normal_outgoing_rate = normal_outgoing_rate + mflux_sumups
                END WHERE
@@ -993,7 +1121,15 @@ CONTAINS
                   ENDIF
                   normal_outgoing_rate(i) = normal_outgoing_rate(i) * ordinary_scale(i)
                ENDDO
+#ifdef CoLMDEBUG
+               CALL system_clock(routing_clock_end)
+#endif
                CALL worker_push_data(push_next2ucat, ordinary_scale, ordinary_scale_next, fillvalue=1._r8)
+#ifdef CoLMDEBUG
+               CALL system_clock(routing_clock_start)
+               routing_time_exchange = routing_time_exchange + &
+                  real(routing_clock_start-routing_clock_end, r8) / real(routing_clock_rate, r8)
+#endif
                DO i = 1, numucat
                   IF (.not. ucatfilter(i)) CYCLE
                   IF (hflux_fc(i) >= 0._r8) THEN
@@ -1005,8 +1141,16 @@ CONTAINS
                   mflux_fc(i) = mflux_fc(i) * dt_this
                   IF (is_built_resv(i)) qresv_out(ucat2resv(i)) = hflux_fc(i)
                ENDDO
+#ifdef CoLMDEBUG
+               CALL system_clock(routing_clock_end)
+#endif
                CALL worker_push_data(push_ups2ucat, hflux_fc, hflux_sumups, fillvalue=0._r8, mode='sum')
                CALL worker_push_data(push_ups2ucat, mflux_fc, mflux_sumups, fillvalue=0._r8, mode='sum')
+#ifdef CoLMDEBUG
+               CALL system_clock(routing_clock_start)
+               routing_time_exchange = routing_time_exchange + &
+                  real(routing_clock_start-routing_clock_end, r8) / real(routing_clock_rate, r8)
+#endif
                WHERE (ucatfilter)
                   sum_hflux_riv = hflux_fc - hflux_sumups
                   sum_mflux_riv = mflux_fc - mflux_sumups
@@ -1028,7 +1172,15 @@ CONTAINS
                      ENDIF
                   ENDDO
                ENDIF
+#ifdef CoLMDEBUG
+               CALL system_clock(routing_clock_end)
+#endif
                CALL sync_global_routing_dt(dt_res, dt_all, next_loop_active)
+#ifdef CoLMDEBUG
+               CALL system_clock(routing_clock_start)
+               routing_time_allreduce = routing_time_allreduce + &
+                  real(routing_clock_start-routing_clock_end, r8) / real(routing_clock_rate, r8)
+#endif
                sum_hflux_base = sum_hflux_riv
                IF (allocated(volresv)) volresv_safe = volresv
                CALL bifurcation_calc(wdsrf_ucat, wdsrf_ucat_prev, volwater_ucat, &
@@ -1055,7 +1207,15 @@ CONTAINS
             ELSE
 #ifdef USEMPI
                IF (rivsys_by_multiple_procs) THEN
+#ifdef CoLMDEBUG
+                  CALL system_clock(routing_clock_end)
+#endif
                   CALL mpi_allreduce (MPI_IN_PLACE, dt_all, 1, MPI_REAL8, MPI_MIN, p_comm_rivsys, p_err)
+#ifdef CoLMDEBUG
+                  CALL system_clock(routing_clock_start)
+                  routing_time_allreduce = routing_time_allreduce + &
+                     real(routing_clock_start-routing_clock_end, r8) / real(routing_clock_rate, r8)
+#endif
                ENDIF
 #endif
             ENDIF
@@ -1317,6 +1477,13 @@ CONTAINS
          ENDDO
 
 #ifdef CoLMDEBUG
+         CALL system_clock(routing_clock_end)
+         routing_time_total = real(routing_clock_end-routing_clock_total_start, r8) / &
+            real(routing_clock_rate, r8)
+         routing_time_local = max(0._r8, routing_time_total-routing_time_exchange-routing_time_allreduce)
+#endif
+
+#ifdef CoLMDEBUG
          totalvol_aft = 0.
          DO i = 1, numucat
             IF (.not. is_built_resv(i)) THEN
@@ -1347,7 +1514,57 @@ CONTAINS
       ENDIF
 
 #ifdef CoLMDEBUG
+      routing_time_sum = [routing_time_local, routing_time_exchange, &
+         routing_time_allreduce, routing_time_total]
+      routing_time_max = routing_time_sum
 #ifdef USEMPI
+      CALL mpi_allreduce (MPI_IN_PLACE, routing_time_sum, 4, MPI_REAL8, MPI_SUM, p_comm_glb, p_err)
+      CALL mpi_allreduce (MPI_IN_PLACE, routing_time_max, 4, MPI_REAL8, MPI_MAX, p_comm_glb, p_err)
+      routing_time_sum = routing_time_sum / real(p_np_worker, r8)
+#endif
+
+#ifdef USEMPI
+      routing_dt_diag_global_min = routing_dt_diag_min
+      CALL mpi_allreduce (MPI_IN_PLACE, routing_dt_diag_global_min, 1, MPI_REAL8, MPI_MIN, p_comm_glb, p_err)
+
+      routing_dt_diag_owner = huge(1)
+      IF (p_is_worker .and. routing_dt_diag_limiter > 0 .and. &
+          routing_dt_diag_min == routing_dt_diag_global_min) routing_dt_diag_owner = p_iam_glb
+      CALL mpi_allreduce (MPI_IN_PLACE, routing_dt_diag_owner, 1, MPI_INTEGER, MPI_MIN, p_comm_glb, p_err)
+#else
+      routing_dt_diag_global_min = routing_dt_diag_min
+      routing_dt_diag_owner = huge(1)
+      IF (routing_dt_diag_limiter > 0) routing_dt_diag_owner = p_iam_glb
+#endif
+
+      routing_dt_diag_ints = 0
+      routing_dt_diag_reals = 0._r8
+      IF (routing_dt_diag_limiter > 0 .and. p_iam_glb == routing_dt_diag_owner) THEN
+         routing_dt_diag_ints = [routing_dt_diag_limiter, routing_dt_diag_ucid, &
+            routing_dt_diag_x, routing_dt_diag_y, routing_dt_diag_next, routing_dt_diag_substep]
+         routing_dt_diag_reals(1)  = routing_dt_diag_min
+         routing_dt_diag_reals(2)  = (real(routing_dt_diag_x, r8)-0.5_r8) * DEF_GRIDBASED_lon_res - 180._r8
+         routing_dt_diag_reals(3)  = 90._r8 - (real(routing_dt_diag_y, r8)-0.5_r8) * DEF_GRIDBASED_lat_res
+         routing_dt_diag_reals(4)  = routing_dt_diag_depth
+         routing_dt_diag_reals(5)  = routing_dt_diag_velocity
+         routing_dt_diag_reals(6)  = routing_dt_diag_water_storage
+         routing_dt_diag_reals(7)  = routing_dt_diag_downstream_flux
+         routing_dt_diag_reals(8)  = routing_dt_diag_upstream_flux
+         routing_dt_diag_reals(9)  = routing_dt_diag_net_outflow
+         routing_dt_diag_reals(10) = merge(routing_dt_diag_cfl, -1._r8, &
+            routing_dt_diag_cfl < 0.5_r8*huge(1._r8))
+         routing_dt_diag_reals(11) = merge(routing_dt_diag_storage_dt, -1._r8, &
+            routing_dt_diag_storage_dt < 0.5_r8*huge(1._r8))
+         routing_dt_diag_reals(12) = merge(routing_dt_diag_momentum, -1._r8, &
+            routing_dt_diag_momentum < 0.5_r8*huge(1._r8))
+      ENDIF
+
+#ifdef USEMPI
+      IF (routing_dt_diag_owner < huge(1)) THEN
+         CALL mpi_bcast (routing_dt_diag_ints, 6, MPI_INTEGER, routing_dt_diag_owner, p_comm_glb, p_err)
+         CALL mpi_bcast (routing_dt_diag_reals, 12, MPI_REAL8, routing_dt_diag_owner, p_comm_glb, p_err)
+      ENDIF
+
       IF (.not. p_is_worker) ntimestep = 0
       CALL mpi_allreduce (MPI_IN_PLACE, ntimestep, 1, MPI_INTEGER, MPI_MAX, p_comm_glb, p_err)
 
@@ -1373,6 +1590,36 @@ CONTAINS
       IF (p_is_master) THEN
          write(*,'(/,A)') 'Checking River Routing Flow ...'
          write(*,'(A,F12.5,A)') 'River Lake Flow minimum average timestep: ', acctime_rnof/ntimestep, ' seconds'
+         write(*,'(A,I0)') 'River routing timed substeps: ', ntimestep
+         write(*,'(A)') 'River routing timing worker average / maximum [s]:'
+         write(*,'(A,2(1X,F12.5))') '  total             =', routing_time_sum(4), routing_time_max(4)
+         write(*,'(A,2(1X,F12.5))') '  local/residual    =', routing_time_sum(1), routing_time_max(1)
+         write(*,'(A,2(1X,F12.5))') '  data_exchange     =', routing_time_sum(2), routing_time_max(2)
+         write(*,'(A,2(1X,F12.5))') '  MPI_Allreduce     =', routing_time_sum(3), routing_time_max(3)
+         IF (routing_dt_diag_owner < huge(1)) THEN
+            SELECT CASE (routing_dt_diag_ints(1))
+            CASE (1)
+               routing_dt_diag_label = 'CFL'
+            CASE (2)
+               routing_dt_diag_label = 'water storage'
+            CASE (3)
+               routing_dt_diag_label = 'momentum'
+            CASE DEFAULT
+               routing_dt_diag_label = 'unknown'
+            END SELECT
+            write(*,'(A,A,A,ES12.4,A,I0)') 'River routing dt limiter: constraint=', &
+               trim(routing_dt_diag_label), ', dt[s]=', routing_dt_diag_reals(1), &
+               ', substep=', routing_dt_diag_ints(6)
+            write(*,'(A,I0,A,I0,A,I0,A,F10.4,A,F10.4,A,I0)') &
+               '  ucat=', routing_dt_diag_ints(2), ', x=', routing_dt_diag_ints(3), &
+               ', y=', routing_dt_diag_ints(4), ', lon=', routing_dt_diag_reals(2), &
+               ', lat=', routing_dt_diag_reals(3), ', next=', routing_dt_diag_ints(5)
+            write(*,'(A,3(1X,ES12.4))') '  depth[m], velocity[m/s], storage[m3]=', routing_dt_diag_reals(4:6)
+            write(*,'(A,3(1X,ES12.4))') &
+               '  downstream_flux, upstream_flux, net_outflow[m3/s]=', routing_dt_diag_reals(7:9)
+            write(*,'(A,3(1X,ES12.4))') &
+               '  candidate_dt CFL/storage/momentum[s]=', routing_dt_diag_reals(10:12)
+         ENDIF
          write(*,'(A,ES8.1,A)') 'Total water before :  ', totalvol_bef,  ' m^3'
          write(*,'(A,ES8.1,A)') 'Total runoff :        ', totalrnof, ' m^3'
          write(*,'(A,ES8.1,A)') 'Total discharge :     ', totaldis,  ' m^3'
