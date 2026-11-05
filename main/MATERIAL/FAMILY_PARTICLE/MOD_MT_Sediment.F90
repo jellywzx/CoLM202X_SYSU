@@ -1076,6 +1076,17 @@ CONTAINS
 #endif
 
 #ifdef CoLMDEBUG
+         CALL system_clock(clk_phase_start)
+#endif
+         ! Preserve the pre-redistribution sampling boundary of the existing
+         ! sediment history fields, especially f_layer_<class>.
+         CALL accumulate_sediment_output(dt_morph)
+#ifdef CoLMDEBUG
+         CALL system_clock(clk_phase_end)
+         IF (clk_rate > 0) t_diag = t_diag + real(clk_phase_end - clk_phase_start, r8) / real(clk_rate, r8)
+#endif
+
+#ifdef CoLMDEBUG
             ! Per-interval extrema, integrals and coverage flags feed only the
             ! CoLMDEBUG diagnostic report below; skip the full-array scans
             ! otherwise.
@@ -1132,15 +1143,8 @@ CONTAINS
          IF (clk_rate > 0) t_layer = t_layer + real(clk_phase_end - clk_phase_start, r8) / real(clk_rate, r8)
 #endif
 
-         ! Sample all storage histories at the same end-of-morphology boundary.
-#ifdef CoLMDEBUG
-         CALL system_clock(clk_phase_start)
-#endif
-         CALL accumulate_sediment_output(dt_morph)
-#ifdef CoLMDEBUG
-         CALL system_clock(clk_phase_end)
-         IF (clk_rate > 0) t_diag = t_diag + real(clk_phase_end - clk_phase_start, r8) / real(clk_rate, r8)
-#endif
+         ! New process inventories use the post-redistribution morphology state.
+         CALL accumulate_sediment_process_output(dt_morph)
 
          sed_time_remaining = sed_time_remaining - dt_morph
          morph_elapsed = morph_elapsed + dt_morph
@@ -1328,6 +1332,23 @@ CONTAINS
             (netflw(:,i) + netflw_adv_step(:,i)) * dt
          a_layer(:,i)  = a_layer(:,i)  + layer(:,i)  * dt
          a_shearvel(i) = a_shearvel(i) + shearvel(i) * dt
+      ENDDO
+
+   END SUBROUTINE accumulate_sediment_output
+
+   !-------------------------------------------------------------------------------------
+   SUBROUTINE accumulate_sediment_process_output(dt)
+   ! Accumulate new process diagnostics at the completed morphology-substep boundary.
+   !-------------------------------------------------------------------------------------
+   USE MOD_Grid_RiverLakeNetwork, only: numucat
+   IMPLICIT NONE
+   real(r8), intent(in) :: dt
+   integer :: i
+
+      IF (.not. p_is_worker) RETURN
+      IF (numucat <= 0) RETURN
+
+      DO i = 1, numucat
          a_seddiag(:,i,SED_DIAG_ES_RAW) = a_seddiag(:,i,SED_DIAG_ES_RAW) + exch_es_raw(:,i) * dt
          a_seddiag(:,i,SED_DIAG_D_RAW) = a_seddiag(:,i,SED_DIAG_D_RAW) + exch_d_raw(:,i) * dt
          a_seddiag(:,i,SED_DIAG_ES_EFF) = a_seddiag(:,i,SED_DIAG_ES_EFF) + exch_es_eff(:,i) * dt
@@ -1339,7 +1360,7 @@ CONTAINS
       ENDDO
       sed_diag_acctime = sed_diag_acctime + dt
 
-   END SUBROUTINE accumulate_sediment_output
+   END SUBROUTINE accumulate_sediment_process_output
 
    !-------------------------------------------------------------------------------------
    SUBROUTINE record_sediment_precap(i, solid_volume, water_volume)

@@ -46,9 +46,16 @@ class SedimentProcessHistoryTest(unittest.TestCase):
 
         grid = routine(self.source, "grid_sediment_calc")
         self.assertLess(
-            grid.index("CALL calc_layer_redistribution(bed_area)"),
             grid.index("CALL accumulate_sediment_output(dt_morph)"),
+            grid.index("CALL calc_layer_redistribution(bed_area)"),
         )
+        self.assertLess(
+            grid.index("CALL calc_layer_redistribution(bed_area)"),
+            grid.index("CALL accumulate_sediment_process_output(dt_morph)"),
+        )
+        self.assertEqual(grid.count("sed_hist_acctime = sed_hist_acctime + deltime"), 1)
+        process_accumulate = routine(self.source, "accumulate_sediment_process_output")
+        self.assertEqual(process_accumulate.count("sed_diag_acctime = sed_diag_acctime + dt"), 1)
         flush = routine(self.source, "flush_sediment_history")
         drop = routine(self.source, "mt_sediment_drop_hist_window")
         for body in (flush, drop):
@@ -69,6 +76,10 @@ class SedimentProcessHistoryTest(unittest.TestCase):
         self.assertIn("sedhistsnap_diag = a_seddiag", snapshot)
         self.assertIn("sedhistsnap_ssc_precap = a_ssc_precap_max", snapshot)
         self.assertIn("sedhistsnap_diag_acctime = sed_diag_acctime", snapshot)
+        writer = routine(self.source, "write_sediment_restart")
+        self.assertIn("t3a = a_seddiag", writer)
+        self.assertIn("a_seddiag = sedhistsnap_diag", writer)
+        self.assertIn("a_seddiag = t3a", writer)
 
     def test_compiled_dt_units_and_cap_accounting(self):
         compiler = shutil.which("gfortran")
@@ -79,6 +90,7 @@ class SedimentProcessHistoryTest(unittest.TestCase):
             routine(self.source, name)
             for name in (
                 "accumulate_sediment_output",
+                "accumulate_sediment_process_output",
                 "record_sediment_precap",
                 "record_sediment_cap_deposition",
             )
@@ -133,10 +145,15 @@ program main
  a_layer=0;a_shearvel=0;a_seddiag=0;a_ssc_precap_max=spval
  exch_es_raw(:,1)=[.1_r8,.2_r8];exch_d_eff(:,1)=[.3_r8,.4_r8]
  exch_d_adv_step(:,1)=[.05_r8,.06_r8];sedsto(:,1)=[2._r8,3._r8]
+ layer(:,1)=[8._r8,9._r8]
  seddep(:,1,1)=[4._r8,5._r8];seddep(:,2,1)=[6._r8,7._r8]
  call record_sediment_cap_deposition(1,'adv',[.2_r8,.3_r8])
  call record_sediment_precap(1,[.1_r8,.2_r8],10._r8)
  call accumulate_sediment_output(10._r8)
+ ! The process accumulator is called only after layer redistribution in production.
+ layer(:,1)=[1._r8,2._r8]
+ call accumulate_sediment_process_output(10._r8)
+ if(any(abs(a_layer(:,1)-[80._r8,90._r8])>1.d-12)) error stop 8
  if(any(abs(a_seddiag(:,1,SED_DIAG_ES_RAW)-[1._r8,2._r8])>1.d-12)) error stop 1
  if(any(abs(a_seddiag(:,1,SED_DIAG_D_EFF)-[3.5_r8,4.6_r8])>1.d-12)) error stop 2
  if(any(abs(a_seddiag(:,1,SED_DIAG_STO)-[20._r8,30._r8])>1.d-12)) error stop 3
@@ -144,6 +161,12 @@ program main
  if(any(abs(a_seddiag(:,1,SED_DIAG_CAP_ADV)-[.2_r8,.3_r8])>1.d-12)) error stop 5
  if(abs(a_ssc_precap_max(1)-79500._r8)>1.d-9) error stop 6
  if(sed_diag_acctime/=10._r8 .or. a_ssc_precap_max(2)/=spval) error stop 7
+ ! A second morphology substep must add each clock and numerator exactly once.
+ call accumulate_sediment_output(20._r8)
+ call accumulate_sediment_process_output(20._r8)
+ if(sed_diag_acctime/=30._r8) error stop 9
+ if(any(abs(a_layer(:,1)-[100._r8,130._r8])>1.d-12)) error stop 10
+ if(any(abs(a_seddiag(:,1,SED_DIAG_ES_RAW)-[3._r8,6._r8])>1.d-12)) error stop 11
  print '(A)', 'SED_DIAG_OK'
 end program
 """
