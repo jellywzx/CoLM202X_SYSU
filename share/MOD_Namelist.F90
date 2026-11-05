@@ -1223,6 +1223,7 @@ MODULE MOD_Namelist
       logical :: netflw                           = .true.
       logical :: sedlayer                         = .true.
       logical :: shearvel                         = .false.
+      logical :: seddiag                          = .true. ! Sediment process and inventory diagnostics
 
       logical :: sensors                          = .true.
 
@@ -3025,6 +3026,7 @@ ENDIF
       CALL sync_hist_vars_one (DEF_hist_vars%netflw      , set_defaults)
       CALL sync_hist_vars_one (DEF_hist_vars%sedlayer    , set_defaults)
       CALL sync_hist_vars_one (DEF_hist_vars%shearvel    , set_defaults)
+      CALL sync_hist_vars_one (DEF_hist_vars%seddiag     , set_defaults)
 
       CALL sync_hist_vars_one (DEF_hist_vars%sensors     , set_defaults)
 

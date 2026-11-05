@@ -188,12 +188,39 @@ MODULE MOD_MT_Sediment
    real(r8), allocatable :: a_layer   (:,:)    ! Accumulated layer
    real(r8), allocatable :: a_shearvel(:)      ! Accumulated shearvel
 
+   ! Flux numerators are solid volumes; inventory numerators are solid volume * s.
+   ! Cap transfers are added once at the actual transfer, without another dt factor.
+   integer, parameter :: SED_N_HISTORY_DIAG = 10
+   integer, parameter :: SED_DIAG_ES_RAW = 1, SED_DIAG_D_RAW = 2
+   integer, parameter :: SED_DIAG_ES_EFF = 3, SED_DIAG_D_EFF = 4
+   integer, parameter :: SED_DIAG_CAP_ADV = 5, SED_DIAG_CAP_EXCH = 6, SED_DIAG_CAP_HILL = 7
+   integer, parameter :: SED_DIAG_STO = 8, SED_DIAG_DEP = 9, SED_DIAG_CAP_OTHER = 10
+   character(len=16), parameter :: SED_HISTORY_DIAG_NAMES(SED_N_HISTORY_DIAG) = &
+      [character(len=16) :: 'es_raw', 'd_raw', 'es_eff', 'd_eff', &
+       'capdep_adv', 'capdep_exch', 'capdep_hill', 'sedsto', 'seddep_solid', 'capdep_other']
+   character(len=128), parameter :: SED_HISTORY_DIAG_LONGNAMES(SED_N_HISTORY_DIAG) = &
+      [character(len=128) :: 'raw bed entrainment solid-volume flux', &
+       'physical settling solid-volume flux, limited by suspended inventory', &
+       'effective bed entrainment solid-volume flux', &
+       'effective deposition solid-volume flux, including cap/dry/protected and shallow source deposits', &
+       'advection concentration-cap deposition solid-volume flux, wet carriers only', &
+       'bed exchange concentration-cap deposition solid-volume flux', &
+       'hillslope input concentration-cap deposition solid-volume flux', &
+       'visible suspended sediment solid-volume storage after all sediment operators', &
+       'below-active-layer sediment solid-volume storage after layer redistribution', &
+       'bifurcation and visible/protected levee concentration-cap deposition solid-volume flux']
+   real(r8), allocatable :: a_seddiag(:,:,:)    ! [nsed, numucat, SED_N_HISTORY_DIAG]
+   real(r8), allocatable :: a_ssc_precap_max(:) ! Visible-water total SSC window maximum [mg L-1]
+   real(r8), save :: sed_diag_acctime = 0._r8  ! Separate clock for migration from older restarts [s]
+
    ! N05 terminal-window snapshot (same role as MOD_MT_RiverLake): keep the
    ! pre-flush rows for the physical restart after a partial-window stop.
    real(r8), allocatable, save :: sedhistsnap_con(:,:), sedhistsnap_out(:,:), sedhistsnap_bed(:,:)
    real(r8), allocatable, save :: sedhistsnap_inp(:,:), sedhistsnap_net(:,:), sedhistsnap_lay(:,:)
    real(r8), allocatable, save :: sedhistsnap_shear(:)
+   real(r8), allocatable, save :: sedhistsnap_diag(:,:,:), sedhistsnap_ssc_precap(:)
    real(r8), save :: sedhistsnap_acctime = 0._r8
+   real(r8), save :: sedhistsnap_diag_acctime = 0._r8
    logical, save :: sedhistsnap_valid = .false.
 
    !-------------------------------------------------------------------------------------
@@ -1049,15 +1076,6 @@ CONTAINS
 #endif
 
 #ifdef CoLMDEBUG
-            CALL system_clock(clk_phase_start)
-#endif
-            CALL accumulate_sediment_output(dt_morph)
-#ifdef CoLMDEBUG
-            CALL system_clock(clk_phase_end)
-            IF (clk_rate > 0) t_diag = t_diag + real(clk_phase_end - clk_phase_start, r8) / real(clk_rate, r8)
-#endif
-
-#ifdef CoLMDEBUG
             ! Per-interval extrema, integrals and coverage flags feed only the
             ! CoLMDEBUG diagnostic report below; skip the full-array scans
             ! otherwise.
@@ -1112,6 +1130,16 @@ CONTAINS
 #ifdef CoLMDEBUG
          CALL system_clock(clk_phase_end)
          IF (clk_rate > 0) t_layer = t_layer + real(clk_phase_end - clk_phase_start, r8) / real(clk_rate, r8)
+#endif
+
+         ! Sample all storage histories at the same end-of-morphology boundary.
+#ifdef CoLMDEBUG
+         CALL system_clock(clk_phase_start)
+#endif
+         CALL accumulate_sediment_output(dt_morph)
+#ifdef CoLMDEBUG
+         CALL system_clock(clk_phase_end)
+         IF (clk_rate > 0) t_diag = t_diag + real(clk_phase_end - clk_phase_start, r8) / real(clk_rate, r8)
 #endif
 
          sed_time_remaining = sed_time_remaining - dt_morph
@@ -1300,9 +1328,55 @@ CONTAINS
             (netflw(:,i) + netflw_adv_step(:,i)) * dt
          a_layer(:,i)  = a_layer(:,i)  + layer(:,i)  * dt
          a_shearvel(i) = a_shearvel(i) + shearvel(i) * dt
+         a_seddiag(:,i,SED_DIAG_ES_RAW) = a_seddiag(:,i,SED_DIAG_ES_RAW) + exch_es_raw(:,i) * dt
+         a_seddiag(:,i,SED_DIAG_D_RAW) = a_seddiag(:,i,SED_DIAG_D_RAW) + exch_d_raw(:,i) * dt
+         a_seddiag(:,i,SED_DIAG_ES_EFF) = a_seddiag(:,i,SED_DIAG_ES_EFF) + exch_es_eff(:,i) * dt
+         a_seddiag(:,i,SED_DIAG_D_EFF) = a_seddiag(:,i,SED_DIAG_D_EFF) + &
+            (exch_d_eff(:,i) + exch_d_adv_step(:,i)) * dt
+         a_seddiag(:,i,SED_DIAG_STO) = a_seddiag(:,i,SED_DIAG_STO) + sedsto(:,i) * dt
+         a_seddiag(:,i,SED_DIAG_DEP) = a_seddiag(:,i,SED_DIAG_DEP) + &
+            (1._r8 - lambda) * sum(seddep(:,:,i), dim=2) * dt
       ENDDO
+      sed_diag_acctime = sed_diag_acctime + dt
 
    END SUBROUTINE accumulate_sediment_output
+
+   !-------------------------------------------------------------------------------------
+   SUBROUTINE record_sediment_precap(i, solid_volume, water_volume)
+   ! Observe visible-water concentration immediately before each concentration cap.
+   ! A dry carrier has no finite SSC; leave its window maximum at spval if never wet.
+   ! psedD is in g cm-3, so the configured density * 1.e6 gives mg L-1 per m3/m3.
+   IMPLICIT NONE
+   integer, intent(in) :: i
+   real(r8), intent(in) :: solid_volume(:), water_volume
+
+      IF (.not. allocated(a_ssc_precap_max)) RETURN
+      IF (water_volume <= 0._r8) RETURN
+      a_ssc_precap_max(i) = max(a_ssc_precap_max(i), &
+         sum(solid_volume) / water_volume * psedD * 1.e6_r8)
+   END SUBROUTINE record_sediment_precap
+
+   !-------------------------------------------------------------------------------------
+   SUBROUTINE record_sediment_cap_deposition(i, stage, solid_volume)
+   ! solid_volume is the actual cap transfer [m3 solid], not a flux or bulk bed volume.
+   IMPLICIT NONE
+   integer, intent(in) :: i
+   character(len=*), intent(in) :: stage
+   real(r8), intent(in) :: solid_volume(:)
+   integer :: idiag
+
+      IF (.not. allocated(a_seddiag)) RETURN
+      SELECT CASE (stage)
+      CASE ('adv');   idiag = SED_DIAG_CAP_ADV
+      CASE ('exch');  idiag = SED_DIAG_CAP_EXCH
+      CASE ('hill');  idiag = SED_DIAG_CAP_HILL
+      CASE ('other'); idiag = SED_DIAG_CAP_OTHER
+      CASE DEFAULT
+         CALL CoLM_stop('unknown sediment concentration-cap diagnostic stage')
+         RETURN
+      END SELECT
+      a_seddiag(:,i,idiag) = a_seddiag(:,i,idiag) + solid_volume
+   END SUBROUTINE record_sediment_cap_deposition
 
    !-------------------------------------------------------------------------------------
    SUBROUTINE sediment_diag_accumulate(dt_all, irivsys, ucatfilter, veloc, wdsrf, &
@@ -1517,6 +1591,7 @@ CONTAINS
                   transfer = merge(sedsto_protected(:,i), min(sedsto_protected(:,i), &
                      excess * sedsto_protected(:,i) / sum(sedsto_protected(:,i))), &
                      excess >= sum(sedsto_protected(:,i)))
+                  CALL record_sediment_cap_deposition(i, 'other', transfer)
                   sedsto_protected(:,i) = sedsto_protected(:,i) - transfer
                   sedbed_protected(:,i) = sedbed_protected(:,i) + transfer
                   netflw_adv_step(:,i) = netflw_adv_step(:,i) - transfer / dt_morph
@@ -1529,10 +1604,12 @@ CONTAINS
                sedsto_protected(:,i) = 0._r8
             ENDIF
             IF (visible_water(i) > 0._r8) THEN
+               CALL record_sediment_precap(i, sedsto(:,i), visible_water(i))
                excess = max(sum(sedsto(:,i)) - visible_water(i) * MAX_SED_CONC, 0._r8)
                IF (excess > 0._r8) THEN
                   transfer = merge(sedsto(:,i), min(sedsto(:,i), excess * sedsto(:,i) / sum(sedsto(:,i))), &
                      excess >= sum(sedsto(:,i)))
+                  CALL record_sediment_cap_deposition(i, 'other', transfer)
                   sedsto(:,i) = sedsto(:,i) - transfer
                   layer(:,i) = layer(:,i) + transfer / (1._r8 - lambda)
                   netflw_adv_step(:,i) = netflw_adv_step(:,i) - transfer / dt_morph
@@ -1828,10 +1905,12 @@ CONTAINS
       sedbed_protected = sedbed_protected + bed_protected_credit
       DO i = 1, numucat
          IF (visible_water(i) > 0._r8) THEN
+            CALL record_sediment_precap(i, sedsto(:,i), visible_water(i))
             excess = max(sum(sedsto(:,i)) - visible_water(i) * MAX_SED_CONC, 0._r8)
             IF (excess > 0._r8) THEN
                deposit = merge(sedsto(:,i), min(sedsto(:,i), excess * sedsto(:,i) / sum(sedsto(:,i))), &
                   excess >= sum(sedsto(:,i)))
+               CALL record_sediment_cap_deposition(i, 'other', deposit)
                sedsto(:,i) = sedsto(:,i) - deposit
                layer(:,i) = layer(:,i) + deposit / (1._r8 - lambda)
                netflw_adv_step(:,i) = netflw_adv_step(:,i) - deposit / dt_morph
@@ -2094,6 +2173,8 @@ CONTAINS
       allocate(a_netflw  (nsed, numucat))
       allocate(a_layer   (nsed, numucat))
       allocate(a_shearvel(numucat))
+      allocate(a_seddiag(nsed, numucat, SED_N_HISTORY_DIAG))
+      allocate(a_ssc_precap_max(numucat))
 
       sedcon       = 0._r8;  sedsto       = 0._r8
       sedsto_protected = 0._r8; sedbed_protected = 0._r8
@@ -2123,6 +2204,9 @@ CONTAINS
       a_sedcon     = 0._r8;  a_sedout     = 0._r8;  a_bedout     = 0._r8
       a_sedinp     = 0._r8;  a_netflw     = 0._r8;  a_layer      = 0._r8
       a_shearvel   = 0._r8
+      a_seddiag = 0._r8
+      a_ssc_precap_max = spval
+      sed_diag_acctime = 0._r8
 
    END SUBROUTINE allocate_sediment_vars
 
@@ -2453,6 +2537,7 @@ CONTAINS
       ! artificially deposits sediment before it can leave.
       DO i = 1, numucat
          sedsto_sum = sum(sedsto(:,i))
+         CALL record_sediment_precap(i, sedsto(:,i), rivsto_donor(i))
          ! Joint BIF/main/levee transport already reserved each face from the
          ! same initial stock.  Pre-depositing here would steal that reserved
          ! mass; the end-carrier cap below performs any needed deposition.
@@ -2461,6 +2546,7 @@ CONTAINS
             dTmp(:) = (sedsto_sum - max(rivsto_donor(i), 0._r8) * MAX_SED_CONC) &
                * sedsto(:,i) / sedsto_sum
             dTmp(:) = min(dTmp(:), sedsto(:,i))
+            IF (rivsto_donor(i) > 0._r8) CALL record_sediment_cap_deposition(i, 'adv', dTmp)
             netflw_adv_step(:,i) = netflw_adv_step(:,i) - dTmp(:) / dt
             exch_d_adv_step(:,i) = exch_d_adv_step(:,i) + dTmp(:) / dt
             sedsto(:,i) = sedsto(:,i) - dTmp(:)
@@ -2519,11 +2605,13 @@ CONTAINS
          layer(:,i) = max(layer(:,i), 0._r8)
 
          IF (rivsto_end(i) > 0._r8) THEN
+            CALL record_sediment_precap(i, sedsto(:,i), rivsto_end(i))
             sedsto_sum = sum(sedsto(:,i))
             IF (sedsto_sum > rivsto_end(i) * MAX_SED_CONC) THEN
                dTmp(:) = (sedsto_sum - rivsto_end(i) * MAX_SED_CONC) * &
                   sedsto(:,i) / sedsto_sum
                dTmp(:) = min(dTmp(:), sedsto(:,i))
+               CALL record_sediment_cap_deposition(i, 'adv', dTmp)
                netflw_adv_step(:,i) = netflw_adv_step(:,i) - dTmp(:) / dt
                exch_d_adv_step(:,i) = exch_d_adv_step(:,i) + dTmp(:) / dt
                sedsto(:,i) = sedsto(:,i) - dTmp(:)
@@ -2817,10 +2905,12 @@ CONTAINS
          IF (rivsto(i) > 0._r8 .and. rivsto(i) >= bed_area(i) * sed_ignore_dph) THEN
             sedsto(:,i) = sedsto(:,i) + sedinp(:,i) * dt
             sedsto_sum = sum(sedsto(:,i))
+            CALL record_sediment_precap(i, sedsto(:,i), rivsto(i))
             IF (sedsto_sum > rivsto(i) * MAX_SED_CONC) THEN
                dTmp(:) = (sedsto_sum - rivsto(i) * MAX_SED_CONC) &
                   * sedsto(:,i) / max(sedsto_sum, 1.e-20_r8)
                dTmp(:) = min(dTmp(:), sedsto(:,i))
+               CALL record_sediment_cap_deposition(i, 'hill', dTmp)
                netflw(:,i) = netflw(:,i) - dTmp(:) / dt
                exch_d_eff(:,i) = exch_d_eff(:,i) + dTmp(:) / dt
                sedsto(:,i) = sedsto(:,i) - dTmp(:)
@@ -2952,10 +3042,12 @@ CONTAINS
          ! MAX_SED_CONC indefinitely when there is no erosion input to trigger the
          ! cap in apply_sediment_input.
          sedsto_sum = sum(sedsto(:,i))
+         CALL record_sediment_precap(i, sedsto(:,i), rivsto(i))
          IF (rivsto(i) > 0._r8 .and. sedsto_sum > rivsto(i) * MAX_SED_CONC) THEN
             dTmp(:) = (sedsto_sum - rivsto(i) * MAX_SED_CONC) &
                * sedsto(:,i) / max(sedsto_sum, 1.e-20_r8)
             dTmp(:) = min(dTmp(:), sedsto(:,i))
+            CALL record_sediment_cap_deposition(i, 'exch', dTmp)
             netflw(:,i) = netflw(:,i) - dTmp(:) / dt
             exch_d_eff(:,i) = exch_d_eff(:,i) + dTmp(:) / dt
             sedsto(:,i) = sedsto(:,i) - dTmp(:)
@@ -3638,6 +3730,8 @@ CONTAINS
          MPI_MAX, p_comm_worker, p_err)
 #endif
 
+      CALL sediment_process_history_checkpoint(file_restart, .false., ncid)
+
       IF (.not. has_schema) THEN
          ! Without a descriptor the old bed/queued/history state cannot be
          ! interpreted under possibly changed porosity, grain, or yield
@@ -3917,7 +4011,10 @@ CONTAINS
       IF (allocated(a_netflw)) a_netflw = 0._r8
       IF (allocated(a_layer)) a_layer = 0._r8
       IF (allocated(a_shearvel)) a_shearvel = 0._r8
+      IF (allocated(a_seddiag)) a_seddiag = 0._r8
+      IF (allocated(a_ssc_precap_max)) a_ssc_precap_max = spval
       sed_hist_acctime = 0._r8
+      sed_diag_acctime = 0._r8
 
    END SUBROUTINE mt_sediment_drop_hist_window
 
@@ -3932,13 +4029,16 @@ CONTAINS
       nuc = 0
       IF (numucat > 0) nuc = numucat
       IF (allocated(sedhistsnap_con)) deallocate(sedhistsnap_con, sedhistsnap_out, sedhistsnap_bed, &
-         sedhistsnap_inp, sedhistsnap_net, sedhistsnap_lay, sedhistsnap_shear)
+         sedhistsnap_inp, sedhistsnap_net, sedhistsnap_lay, sedhistsnap_shear, &
+         sedhistsnap_diag, sedhistsnap_ssc_precap)
       allocate(sedhistsnap_con(nsed,nuc), sedhistsnap_out(nsed,nuc), sedhistsnap_bed(nsed,nuc), &
          sedhistsnap_inp(nsed,nuc), sedhistsnap_net(nsed,nuc), sedhistsnap_lay(nsed,nuc), &
-         sedhistsnap_shear(nuc))
+         sedhistsnap_shear(nuc), sedhistsnap_diag(nsed,nuc,SED_N_HISTORY_DIAG), &
+         sedhistsnap_ssc_precap(nuc))
       sedhistsnap_con = 0._r8; sedhistsnap_out = 0._r8; sedhistsnap_bed = 0._r8
       sedhistsnap_inp = 0._r8; sedhistsnap_net = 0._r8; sedhistsnap_lay = 0._r8
       sedhistsnap_shear = 0._r8
+      sedhistsnap_diag = 0._r8; sedhistsnap_ssc_precap = spval
       IF (nuc > 0) THEN
          IF (allocated(a_sedcon)) sedhistsnap_con = a_sedcon
          IF (allocated(a_sedout)) sedhistsnap_out = a_sedout
@@ -3947,11 +4047,108 @@ CONTAINS
          IF (allocated(a_netflw)) sedhistsnap_net = a_netflw
          IF (allocated(a_layer)) sedhistsnap_lay = a_layer
          IF (allocated(a_shearvel)) sedhistsnap_shear = a_shearvel
+         IF (allocated(a_seddiag)) sedhistsnap_diag = a_seddiag
+         IF (allocated(a_ssc_precap_max)) sedhistsnap_ssc_precap = a_ssc_precap_max
       ENDIF
       sedhistsnap_acctime = sed_hist_acctime
+      sedhistsnap_diag_acctime = sed_diag_acctime
       sedhistsnap_valid = .true.
 
    END SUBROUTINE mt_sediment_snapshot_hist_acc
+
+   !-------------------------------------------------------------------------------------
+   SUBROUTINE sediment_process_history_checkpoint(file, writing, ncid)
+   ! Share the diagnostic checkpoint contract with the physical restart.
+   ! Older files have no diagnostic clock: start only these new diagnostics afresh,
+   ! keeping a separate denominator so older history time cannot dilute their means.
+   USE MOD_Grid_RiverLakeNetwork, only: numucat, totalnumucat, ucat_data_address
+   USE MOD_Vector_ReadWrite, only: vector_gather_and_write
+   IMPLICIT NONE
+   character(len=*), intent(in) :: file
+   logical, intent(in) :: writing
+   integer, intent(in) :: ncid
+   real(r8), allocatable :: row(:), buf(:)
+   character(len=64) :: name
+   character(len=16) :: cised
+   integer :: idiag, ised
+   logical :: found
+
+      IF (writing) THEN
+         CALL validate_sediment_process_history()
+      ELSE
+         CALL try_read_restart_var(file, ncid, 'sed_diag_acctime_vec', buf, &
+            numucat, ucat_data_address, found)
+         IF (.not. found) THEN
+            IF (allocated(a_seddiag)) a_seddiag = 0._r8
+            IF (allocated(a_ssc_precap_max)) a_ssc_precap_max = spval
+            sed_diag_acctime = 0._r8
+            IF (p_is_io) WRITE(*,'(A)') &
+               'Sediment history: older checkpoint; new process diagnostics start with a fresh averaging clock.'
+            RETURN
+         ENDIF
+         sed_diag_acctime = 0._r8
+         IF (p_is_worker .and. numucat > 0) sed_diag_acctime = buf(1)
+         IF (allocated(buf)) deallocate(buf)
+      ENDIF
+
+      IF (p_is_worker) THEN
+         allocate(row(numucat))
+      ELSE
+         allocate(row(0))
+      ENDIF
+      IF (writing) THEN
+         row = sed_diag_acctime
+         CALL vector_gather_and_write(row, size(row), totalnumucat, ucat_data_address, &
+            file, 'sed_diag_acctime_vec', 'ucatch')
+      ENDIF
+      DO idiag = 1, SED_N_HISTORY_DIAG
+         DO ised = 1, nsed
+            WRITE(cised, '(I0)') ised
+            name = 'a_' // trim(SED_HISTORY_DIAG_NAMES(idiag)) // '_' // trim(cised)
+            IF (writing) THEN
+               IF (p_is_worker .and. numucat > 0) row = a_seddiag(ised,:,idiag)
+               CALL vector_gather_and_write(row, size(row), totalnumucat, &
+                  ucat_data_address, file, trim(name), 'ucatch')
+            ELSE
+               CALL require_sediment_restart_var(file, ncid, trim(name), buf, &
+                  numucat, ucat_data_address)
+               IF (p_is_worker .and. numucat > 0) a_seddiag(ised,:,idiag) = buf
+               IF (allocated(buf)) deallocate(buf)
+            ENDIF
+         ENDDO
+      ENDDO
+      IF (writing) THEN
+         IF (p_is_worker .and. numucat > 0) row = a_ssc_precap_max
+         CALL vector_gather_and_write(row, size(row), totalnumucat, ucat_data_address, &
+            file, 'a_ssc_precap_max', 'ucatch')
+      ELSE
+         CALL require_sediment_restart_var(file, ncid, 'a_ssc_precap_max', buf, &
+            numucat, ucat_data_address)
+         IF (p_is_worker .and. numucat > 0) a_ssc_precap_max = buf
+         IF (allocated(buf)) deallocate(buf)
+         CALL validate_sediment_process_history()
+      ENDIF
+      deallocate(row)
+   END SUBROUTINE sediment_process_history_checkpoint
+
+   !-------------------------------------------------------------------------------------
+   SUBROUTINE validate_sediment_process_history()
+   IMPLICIT NONE
+   logical :: bad
+
+      bad = .not. sediment_restart_value_finite(sed_diag_acctime) .or. sed_diag_acctime < 0._r8
+      IF (p_is_worker) THEN
+         IF (allocated(a_seddiag)) bad = bad .or. &
+            any(.not. sediment_restart_value_finite(a_seddiag)) .or. any(a_seddiag < 0._r8)
+         IF (allocated(a_ssc_precap_max)) bad = bad .or. &
+            any(.not. sediment_restart_value_finite(a_ssc_precap_max)) .or. &
+            any(a_ssc_precap_max < 0._r8 .and. a_ssc_precap_max /= spval)
+      ENDIF
+#ifdef USEMPI
+      CALL mpi_allreduce(MPI_IN_PLACE, bad, 1, MPI_LOGICAL, MPI_LOR, p_comm_glb, p_err)
+#endif
+      IF (bad) CALL CoLM_stop('sediment process history contains invalid accumulators or clock')
+   END SUBROUTINE validate_sediment_process_history
 
    SUBROUTINE mt_sediment_substep_stats (adv_calls, adv_sum, adv_max, bif_calls, bif_sum, bif_max)
       IMPLICIT NONE
@@ -3978,7 +4175,8 @@ CONTAINS
    real(r8) :: dummy_sed(1)   ! Dummy for non-worker processes (vlen=0, never accessed)
    real(r8), allocatable :: scalar_vec(:)
    real(r8), allocatable :: t2a(:,:), t2b(:,:), t2c(:,:), t2d(:,:), t2e(:,:), t2f(:,:), t1a(:)
-   real(r8) :: t_acctime
+   real(r8), allocatable :: t3a(:,:,:), t1b(:)
+   real(r8) :: t_acctime, t_diag_acctime
 
       ! All processes must participate (MPI collective calls inside vector_gather_and_write).
       IF (.not. sediment_particle_enabled()) RETURN
@@ -4282,12 +4480,16 @@ CONTAINS
       IF (sedhistsnap_valid .and. p_is_worker .and. numucat > 0 .and. &
           allocated(sedhistsnap_con) .and. allocated(a_sedcon)) THEN
          allocate(t2a(nsed,numucat), t2b(nsed,numucat), t2c(nsed,numucat), &
-            t2d(nsed,numucat), t2e(nsed,numucat), t2f(nsed,numucat), t1a(numucat))
+            t2d(nsed,numucat), t2e(nsed,numucat), t2f(nsed,numucat), t1a(numucat), &
+            t3a(nsed,numucat,SED_N_HISTORY_DIAG), t1b(numucat))
          t2a = a_sedcon; t2b = a_sedout; t2c = a_bedout; t2d = a_sedinp
          t2e = a_netflw; t2f = a_layer; t1a = a_shearvel; t_acctime = sed_hist_acctime
+         t3a = a_seddiag; t1b = a_ssc_precap_max; t_diag_acctime = sed_diag_acctime
          a_sedcon = sedhistsnap_con; a_sedout = sedhistsnap_out; a_bedout = sedhistsnap_bed
          a_sedinp = sedhistsnap_inp; a_netflw = sedhistsnap_net; a_layer = sedhistsnap_lay
          a_shearvel = sedhistsnap_shear; sed_hist_acctime = sedhistsnap_acctime
+         a_seddiag = sedhistsnap_diag; a_ssc_precap_max = sedhistsnap_ssc_precap
+         sed_diag_acctime = sedhistsnap_diag_acctime
       ENDIF
       DO ised = 1, nsed
          WRITE(cised, '(I0)') ised
@@ -4337,15 +4539,19 @@ CONTAINS
       CALL vector_gather_and_write(scalar_vec, size(scalar_vec), totalnumucat, ucat_data_address, &
          file_restart, 'sed_hist_acctime_vec', 'ucatch')
       IF (allocated(scalar_vec)) deallocate(scalar_vec)
+
+      CALL sediment_process_history_checkpoint(file_restart, .true., -1)
       IF (allocated(t2a)) THEN
          a_sedcon = t2a; a_sedout = t2b; a_bedout = t2c; a_sedinp = t2d
          a_netflw = t2e; a_layer = t2f; a_shearvel = t1a; sed_hist_acctime = t_acctime
-         deallocate(t2a, t2b, t2c, t2d, t2e, t2f, t1a)
+         a_seddiag = t3a; a_ssc_precap_max = t1b; sed_diag_acctime = t_diag_acctime
+         deallocate(t2a, t2b, t2c, t2d, t2e, t2f, t1a, t3a, t1b)
       ENDIF
       IF (sedhistsnap_valid) THEN
          sedhistsnap_valid = .false.
          IF (allocated(sedhistsnap_con)) deallocate(sedhistsnap_con, sedhistsnap_out, &
-            sedhistsnap_bed, sedhistsnap_inp, sedhistsnap_net, sedhistsnap_lay, sedhistsnap_shear)
+            sedhistsnap_bed, sedhistsnap_inp, sedhistsnap_net, sedhistsnap_lay, sedhistsnap_shear, &
+            sedhistsnap_diag, sedhistsnap_ssc_precap)
       ENDIF
 
       CALL write_sediment_scalar_meta(file_restart, 'sed_restart_complete_meta', &
@@ -4479,6 +4685,8 @@ CONTAINS
             units = 'm/s')
       ENDIF
 
+      IF (DEF_hist_vars%seddiag) CALL write_sediment_process_history()
+
       IF (allocated(a_sedcon_avg  )) deallocate (a_sedcon_avg  )
       IF (allocated(a_sedout_avg  )) deallocate (a_sedout_avg  )
       IF (allocated(a_bedout_avg  )) deallocate (a_bedout_avg  )
@@ -4488,6 +4696,40 @@ CONTAINS
       IF (allocated(a_shearvel_avg)) deallocate (a_shearvel_avg)
 
    END SUBROUTINE write_sediment_history
+
+   !-------------------------------------------------------------------------------------
+   SUBROUTINE write_sediment_process_history()
+   USE MOD_Grid_RiverLakeNetwork, only: numucat
+   USE MOD_Grid_RiverLakeHistRoute, only: route_hist_write_ucat
+   IMPLICIT NONE
+   real(r8), allocatable :: row(:)
+   integer :: idiag, ised
+   character(len=16) :: cised, units
+
+      IF (p_is_worker) THEN
+         allocate(row(numucat))
+      ELSE
+         allocate(row(0))
+      ENDIF
+      DO idiag = 1, SED_N_HISTORY_DIAG
+         units = 'm^3/s'
+         IF (idiag == SED_DIAG_STO .or. idiag == SED_DIAG_DEP) units = 'm^3'
+         DO ised = 1, nsed
+            WRITE(cised, '(I0)') ised
+            row = spval
+            IF (p_is_worker .and. numucat > 0) THEN
+               IF (sed_diag_acctime > 0._r8) row = a_seddiag(ised,:,idiag) / sed_diag_acctime
+            ENDIF
+            CALL route_hist_write_ucat(row, 'f_' // trim(SED_HISTORY_DIAG_NAMES(idiag)) // '_' // trim(cised), &
+               longname = trim(SED_HISTORY_DIAG_LONGNAMES(idiag)) // ', size class ' // trim(cised), &
+               units = trim(units))
+         ENDDO
+      ENDDO
+      IF (p_is_worker .and. numucat > 0) row = a_ssc_precap_max
+      CALL route_hist_write_ucat(row, 'f_ssc_precap_max', &
+         longname = 'history-window maximum visible-water total SSC before concentration caps', units = 'mg L-1')
+      deallocate(row)
+   END SUBROUTINE write_sediment_process_history
 
    !-------------------------------------------------------------------------------------
    SUBROUTINE flush_sediment_history()
@@ -4505,6 +4747,9 @@ CONTAINS
       a_layer    = 0.
       a_shearvel = 0.
       sed_hist_acctime = 0.
+      a_seddiag = 0._r8
+      a_ssc_precap_max = spval
+      sed_diag_acctime = 0._r8
 
    END SUBROUTINE flush_sediment_history
 
@@ -4577,12 +4822,17 @@ CONTAINS
       IF (allocated(a_netflw     )) deallocate(a_netflw     )
       IF (allocated(a_layer      )) deallocate(a_layer      )
       IF (allocated(a_shearvel   )) deallocate(a_shearvel   )
+      IF (allocated(a_seddiag    )) deallocate(a_seddiag    )
+      IF (allocated(a_ssc_precap_max)) deallocate(a_ssc_precap_max)
+      sed_diag_acctime = 0._r8
       ! The history-window snapshot is allocated lazily in
       ! grid_sediment_snapshot_hist and must not outlive the module state.
       IF (allocated(sedhistsnap_con)) deallocate(sedhistsnap_con, sedhistsnap_out, sedhistsnap_bed, &
-         sedhistsnap_inp, sedhistsnap_net, sedhistsnap_lay, sedhistsnap_shear)
+         sedhistsnap_inp, sedhistsnap_net, sedhistsnap_lay, sedhistsnap_shear, &
+         sedhistsnap_diag, sedhistsnap_ssc_precap)
       sedhistsnap_valid   = .false.
       sedhistsnap_acctime = 0._r8
+      sedhistsnap_diag_acctime = 0._r8
       sed_hist_acctime    = 0._r8
    END SUBROUTINE grid_sediment_final
 
