@@ -14,6 +14,22 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "main/MATERIAL/FAMILY_PARTICLE/MOD_MT_Sediment.F90"
 
 
+def mpi_fortran_flags():
+    """Return runtime-check flags supported by the MPI wrapper's compiler."""
+    try:
+        version = subprocess.check_output(
+            ["mpif90", "--version"], text=True, stderr=subprocess.STDOUT
+        )
+    except subprocess.CalledProcessError as error:
+        version = error.output
+    lowered = version.lower()
+    if "gnu fortran" in lowered:
+        return ["-ffree-line-length-none", "-fcheck=all"], version.splitlines()[0]
+    if "intel" in lowered or "ifort" in lowered or "ifx" in lowered:
+        return ["-extend-source", "512", "-check", "all"], version.splitlines()[0]
+    return [], version.splitlines()[0] if version.splitlines() else "unknown compiler"
+
+
 def extract(source: str, name: str) -> str:
     pattern = (
         rf"^\s*(?:(?:ELEMENTAL\s+)?(?:LOGICAL\s+)?FUNCTION|SUBROUTINE)\s+{name}\b.*?"
@@ -48,19 +64,47 @@ class SedimentProcessHistoryMPI(unittest.TestCase):
         )
         program = MPI_PROGRAM.replace("@PRODUCTION_ROUTINES@", routines)
 
-        flags = shlex.split(subprocess.check_output(["nf-config", "--fflags"], text=True))
-        libs = shlex.split(subprocess.check_output(["nf-config", "--flibs"], text=True))
-        libs += shlex.split(subprocess.check_output(["nc-config", "--libs"], text=True))
+        try:
+            flags = shlex.split(subprocess.check_output(["nf-config", "--fflags"], text=True))
+            libs = shlex.split(subprocess.check_output(["nf-config", "--flibs"], text=True))
+            libs += shlex.split(subprocess.check_output(["nc-config", "--libs"], text=True))
+        except subprocess.CalledProcessError as error:
+            self.skipTest(f"NetCDF configuration command failed: {error}")
+        compiler_flags, compiler_name = mpi_fortran_flags()
 
         with tempfile.TemporaryDirectory(prefix="mt-seddiag-mpi-") as tmp:
             folder = Path(tmp)
+            probe_source = folder / "probe.F90"
+            probe = folder / "probe"
+            probe_source.write_text(
+                "program probe\n use mpi\n use netcdf\n print *, nf90_noerr\nend program\n",
+                encoding="utf-8",
+            )
+            probed = subprocess.run(
+                [
+                    "mpif90", "-cpp", *compiler_flags, *flags,
+                    str(probe_source), *libs, "-o", str(probe),
+                ],
+                cwd=folder,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=60,
+            )
+            if probed.returncode != 0:
+                detail = " ".join(probed.stdout.splitlines()[:3])
+                self.skipTest(
+                    f"{compiler_name} cannot use the NetCDF-Fortran module selected by "
+                    f"nf-config: {detail}"
+                )
+
             test_source = folder / "test.F90"
             executable = folder / "test"
             test_source.write_text(program, encoding="utf-8")
             built = subprocess.run(
                 [
-                    "mpif90", "-cpp", "-DUSEMPI", "-ffree-line-length-none",
-                    "-fcheck=all", *flags, str(test_source), *libs, "-o", str(executable),
+                    "mpif90", "-cpp", "-DUSEMPI", *compiler_flags,
+                    *flags, str(test_source), *libs, "-o", str(executable),
                 ],
                 cwd=folder,
                 text=True,
