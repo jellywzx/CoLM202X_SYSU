@@ -1,0 +1,24 @@
+&nl_colm_history
+
+   ! River routing variables
+   DEF_hist_vars%discharge  = .true.
+   DEF_hist_vars%riv_height = .true.
+   DEF_hist_vars%riv_veloct = .true.
+   DEF_hist_vars%floodarea  = .true.
+   DEF_hist_vars%floodfrc   = .true.
+   DEF_hist_vars%wdsrf_hru  = .true.
+   DEF_hist_vars%veloc_hru  = .true.
+
+   ! Existing sediment histories
+   DEF_hist_vars%sedcon     = .true.
+   DEF_hist_vars%sedout     = .true.
+   DEF_hist_vars%bedout     = .true.
+   DEF_hist_vars%sedinp     = .true.
+   DEF_hist_vars%netflw     = .true.
+   DEF_hist_vars%sedlayer   = .true.
+   DEF_hist_vars%shearvel   = .true.
+
+   ! P1 process, cap-deposition and inventory diagnostics
+   DEF_hist_vars%seddiag    = .true.
+
+/

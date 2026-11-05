@@ -1,0 +1,29 @@
+&nl_colm_sediment_parameter
+
+   ! Class order follows sed_frc in grid_routing_data_15min_sed.nc:
+   ! clay, silt, sand.
+   DEF_SEDIMENT%nsed                   = 3
+   DEF_SEDIMENT%grain_diameter         = 2.0e-6, 2.0e-5, 1.0e-4
+
+   DEF_SEDIMENT%grain_density          = 2650.0
+   DEF_SEDIMENT%water_density          = 1000.0
+   DEF_SEDIMENT%porosity               = 0.4
+   DEF_SEDIMENT%ndeposit_layers        = 5
+   DEF_SEDIMENT%ignore_depth_m         = 0.05
+   DEF_SEDIMENT%active_layer_depth     = 5.0e-3
+
+   DEF_SEDIMENT%viscosity              = 1.0e-6
+   DEF_SEDIMENT%von_karman             = 0.4
+   DEF_SEDIMENT%settling_multiplier    = 1.0
+
+   DEF_SEDIMENT%yield_coefficient      = 0.01
+   DEF_SEDIMENT%slope_exponent         = 2.0
+   DEF_SEDIMENT%precipitation_exponent = 2.0
+   DEF_SEDIMENT%unit_conversion        = 1.0e-6
+
+   ! Retained for restart/configuration compatibility only. The current
+   ! advection scheme is donor-inventory limited and does not use cfl_adv.
+   DEF_SEDIMENT%cfl_adv                = 0.5
+   DEF_SEDIMENT%max_timestep_s          = 1800.0
+
+/
